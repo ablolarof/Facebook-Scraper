@@ -1,0 +1,39 @@
+# ── OS junk ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor / IDE ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Node (only here in case you ever add tooling) ──────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ── Local secrets ──────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ── Scratch / exported data ────────────────────────────────────────────────
+# The dashboard's "Export JSON" button downloads files matching this pattern.
+tlv-rentals-*.json
+*.bak
+*.old
+*.backup
+scratch/
+tmp/
+
+# ── Build output (in case you ever add a bundler) ──────────────────────────
+dist/
+build/
