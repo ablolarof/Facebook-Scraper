@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TLV Rentals</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <header>🏠 TLV Rentals</header>
+
+  <!-- Which page is currently open? -->
+  <div id="page-status">
+    <span id="page-status-text">Checking page…</span>
+  </div>
+
+  <!-- Stop-condition inputs + Scrape button (visible when idle) -->
+  <section id="controls">
+    <div class="field-row">
+      <label for="max-dupes">Stop after N duplicates in a row</label>
+      <input type="number" id="max-dupes" value="30" min="1" max="500">
+    </div>
+    <div class="field-row">
+      <label for="max-duration">Stop after (minutes)</label>
+      <input type="number" id="max-duration" value="5" min="1" max="60">
+    </div>
+    <button id="scrape-btn" disabled>Scrape This Feed</button>
+  </section>
+
+  <!-- Live progress (visible only while scraping) -->
+  <section id="scrape-status" class="hidden">
+    <div id="status-line">Starting…</div>
+    <button id="stop-btn">■ Stop</button>
+  </section>
+
+  <!-- Shown when a stop condition fires; user can push past it or quit -->
+  <!-- Button labels are templated at boot by popup.js from CONTINUE_POSTS /
+       CONTINUE_MINUTES so the number stays single-sourced. -->
+  <section id="continuation-banner" class="hidden">
+    <p id="stop-reason-text"></p>
+    <button id="continue-posts-btn"></button>
+    <button id="continue-time-btn"></button>
+    <button id="done-btn">Done</button>
+  </section>
+
+  <!-- Running total -->
+  <section id="summary">
+    <span id="total-stored">Total stored: —</span>
+  </section>
+
+  <!-- Settings panel — toggled by the Settings link in the footer -->
+  <section id="settings-panel" class="hidden">
+    <label for="api-key-input" class="settings-label">Google Gemini API key</label>
+    <input type="password" id="api-key-input" placeholder="AIza…" autocomplete="off">
+    <div class="settings-actions">
+      <button id="save-key-btn">Save</button>
+      <button id="clear-key-btn">Clear</button>
+    </div>
+    <p id="key-status"></p>
+    <p class="settings-hint">
+      Get a free key at <code>aistudio.google.com/apikey</code>. Stored in
+      <code>chrome.storage.local</code> on this machine only. Used to auto-classify
+      scraped posts as rental or not_rental via Gemini Flash.
+    </p>
+  </section>
+
+  <footer>
+    <button id="open-dashboard-btn">Open Dashboard ↗</button>
+    <a href="#" id="settings-link" title="Set Gemini API key">Settings</a>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
