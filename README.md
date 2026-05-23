@@ -162,3 +162,4 @@ See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](ht
 ## Disclaimer
 
 This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk.
+I created a burner fb account and joined all the groups that i wanted to aggregate
