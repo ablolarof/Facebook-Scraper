@@ -213,6 +213,16 @@ body {
   font-size: 11px;
   color: #8a8d91;
   margin-left: auto;
+  text-align: right;
+  line-height: 1.4;
+  /* Allow the two timestamp chips to wrap onto two lines on narrow cards
+     rather than overflow the meta row. */
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 4px;
+}
+.card-time-part {
   white-space: nowrap;
 }
 

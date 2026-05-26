@@ -7,7 +7,8 @@
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://www.facebook.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "http://localhost:8765/*"
   ],
 
   "action": {
