@@ -28,6 +28,9 @@ yarn.lock
 # ── Scratch / exported data ────────────────────────────────────────────────
 # The dashboard's "Export JSON" button downloads files matching this pattern.
 tlv-rentals-*.json
+# The dashboard's "Export Misses" button downloads into Misses/.
+Misses/
+tlv-regex-misses-*.txt
 *.bak
 *.old
 *.backup
