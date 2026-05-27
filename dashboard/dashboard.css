@@ -338,12 +338,6 @@ body {
 .detail-pill--broker           { background: #fde8e8; color: #8b1a1a; }
 .detail-pill--no-broker        { background: #d4edda; color: #155724; }
 .detail-pill--corrected        { background: #d4edda; color: #155724; }
-/* Neighborhood — low confidence gets a dashed border + reduced opacity */
-.detail-pill--neighborhood-low { background: #e7f3ff; color: #1877f2;
-                                  border: 1px dashed #1877f2; opacity: 0.7; }
-/* Unknown neighborhood (tags extracted but neighborhood came back null) */
-.detail-pill--unknown          { background: #e4e6eb; color: #8a8d91; }
-
 /* "Show more / Show less" expander — sibling of .card-text, not nested inside
    it, so no parent style or RTL bidi can ever hide or shift it. Full-width
    pill that visually anchors as a separate, obviously-interactive control. */
@@ -427,7 +421,7 @@ body {
   color: #1c1e21;
   background: #fff;
 }
-/* Wider value input for free-text fields (neighborhood, entry date) */
+/* Wider value input for free-text fields (entry date) */
 .tag-field-value--text {
   width: 110px;
 }

@@ -10,12 +10,11 @@
 
 - **One-click scraping** — open any Facebook group or feed, click *Scrape This Feed* in the popup, and the extension auto-scrolls and captures posts. Configurable stop conditions (N consecutive duplicates, or a time limit). A continuation banner lets you push past the stop point for 50 more posts or 5 more minutes.
 - **Local-only classification** — every captured post runs through `lib/regex_extractor.js`, a Hebrew/English regex pass that catches `להשכרה`, `שכירות`, `for rent`, monthly-price patterns, and the inverse (`למכירה`, `for sale`). There is no remote API in the loop. Posts the regex can't classify with confidence stay unlabeled until a human handles them.
-- **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), neighborhood, entry date, whether it's a roommate listing, and whether a broker fee applies.
+- **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), entry date, whether it's a roommate listing, and whether a broker fee applies.
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
 - **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`).
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
-- **Deterministic neighborhood overrides** — a curated list of 40+ Hebrew neighborhood names (sourced from the Tel Aviv municipal GIS, layer 511) matched against post text. Override matches win with `confidence: high`.
-- **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, neighborhood, duplicates visibility.
+- **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
 - **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` and synced to the optional local training server.
 - **Optional Python training server** (`server/`) — a FastAPI/SQLite service at `http://localhost:8765` that mirrors labeled posts into a durable `training.db`, so corrections survive a browser-data clear. Fire-and-forget — the extension never blocks on it.
 - **Deduplication** — posts are fingerprinted on save (SHA-256 of normalised text + first image URL). A duplicate inherits the original's classification so we don't redo work on identical content.
@@ -154,7 +153,7 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 │   ├── db.js                           # IndexedDB wrapper
 │   ├── dedup.js                        # SHA-256 of normalised text + first image URL
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
-│   └── neighborhood_overrides.js       # Hebrew → canonical English neighborhood map
+
 ├── server/
 │   ├── server.py                       # FastAPI training-data sink (SQLite)
 │   ├── requirements.txt
@@ -175,31 +174,6 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 2. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
 3. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
 4. **Fix the group-name capture bug.** Some group names come through truncated.
-
----
-
-## Neighborhood detection
-
-If post text contains a Hebrew neighborhood name from `lib/neighborhood_overrides.js`, the field is filled immediately with `confidence: high`. Otherwise the field stays `null`. The regex does not infer neighborhoods from street names — that capability will return via stage 2 as users teach the system new mappings.
-
-The 14 canonical neighborhoods used in filters and tag pills:
-
-| Canonical name           | Hebrew examples              |
-|--------------------------|------------------------------|
-| Old North                | הצפון הישן                   |
-| New North                | הצפון החדש                   |
-| Bavli                    | בבלי                         |
-| Lev Tel Aviv             | לב תל-אביב, מרכז העיר         |
-| Ganei Sarona             | גני שרונה, שרונה              |
-| Montefiore               | מונטיפיורי                   |
-| Kerem Hateimanim         | כרם התימנים, שוק הכרמל        |
-| Neve Zedek               | נווה צדק                     |
-| Florentine               | פלורנטין                     |
-| Neve Sha'anan            | נווה שאנן                    |
-| South Tel Aviv           | שפירא, התקווה, יד אליהו, …    |
-| North of the Yarkon      | רמת אביב, גלילות              |
-| East of the Ayalon       | —                            |
-| Yafo                     | יפו                          |
 
 ---
 

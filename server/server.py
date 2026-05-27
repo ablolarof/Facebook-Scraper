@@ -57,7 +57,6 @@ def init_db():
                 price         REAL,
                 rooms         REAL,
                 size          REAL,
-                neighborhood  TEXT,
                 entry_date    TEXT,
                 roommates     INTEGER,
                 broker        INTEGER,
@@ -134,15 +133,14 @@ def save_label(payload: LabelPayload):
             """
             INSERT INTO labeled_posts
                 (post_id, text, author_name, group_name, human_label,
-                 price, rooms, size, neighborhood, entry_date,
+                 price, rooms, size, entry_date,
                  roommates, broker, scraped_at, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(post_id) DO UPDATE SET
                 human_label   = excluded.human_label,
                 price         = excluded.price,
                 rooms         = excluded.rooms,
                 size          = excluded.size,
-                neighborhood  = excluded.neighborhood,
                 entry_date    = excluded.entry_date,
                 roommates     = excluded.roommates,
                 broker        = excluded.broker,
@@ -157,7 +155,6 @@ def save_label(payload: LabelPayload):
                 tags.get("price"),
                 tags.get("rooms"),
                 tags.get("size"),
-                tags.get("neighborhood"),
                 tags.get("entry_date"),
                 _bool_to_int(tags.get("roommates")),
                 _bool_to_int(tags.get("broker")),
@@ -205,15 +202,14 @@ def import_bulk(posts: list[dict]):
                 """
                 INSERT INTO labeled_posts
                     (post_id, text, author_name, group_name, human_label,
-                     price, rooms, size, neighborhood, entry_date,
+                     price, rooms, size, entry_date,
                      roommates, broker, scraped_at, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     human_label   = excluded.human_label,
                     price         = excluded.price,
                     rooms         = excluded.rooms,
                     size          = excluded.size,
-                    neighborhood  = excluded.neighborhood,
                     entry_date    = excluded.entry_date,
                     roommates     = excluded.roommates,
                     broker        = excluded.broker,
@@ -228,7 +224,6 @@ def import_bulk(posts: list[dict]):
                     tags.get("price"),
                     tags.get("rooms"),
                     tags.get("size"),
-                    tags.get("neighborhood"),
                     tags.get("entry_date"),
                     _bool_to_int(tags.get("roommates")),
                     _bool_to_int(tags.get("broker")),

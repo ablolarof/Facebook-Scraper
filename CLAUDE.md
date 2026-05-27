@@ -55,7 +55,7 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/db.js** | IndexedDB wrapper. |
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
-| **lib/neighborhood_overrides.js** | Deterministic Hebrew → English neighborhood mapping. |
+
 | **server/server.py** | Optional FastAPI/SQLite training-data sink. |
 
 ## Common development tasks
@@ -83,13 +83,10 @@ Posts are deduplicated by content hash (text + first image URL). Cross-group rep
 `lib/regex_extractor.js` exports:
 
 - `regexClassifyPost(text)` returns `'rental'`, `'not_rental'`, or `null` for ambiguous text. Null is honest — the dashboard surfaces null as "Unlabeled".
-- `regexExtractTags(text)` returns `{price, rooms, size, neighborhood, neighborhood_confidence, neighborhood_evidence, entry_date, roommates, broker}` with nulls where the regex cannot determine the field.
+- `regexExtractTags(text)` returns `{price, rooms, size, entry_date, roommates, broker}` with nulls where the regex cannot determine the field.
 
 Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classified_by` field is `'regex'` for new posts, unset for legacy ones. The dashboard labels legacy posts "Legacy: Rental" with an "Auto-labeled (legacy)" tooltip.
 
-### Neighborhood detection
-
-Currently doesn't work. to be dealt with in the next phase.
 
 ### Async patterns
 

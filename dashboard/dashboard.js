@@ -25,7 +25,6 @@ const expandedPostIds = new Set(); // post_ids whose full text is currently visi
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   await loadPosts();
-  buildNeighborhoodCheckboxes();
   applyFilters();
   bindControls();
   autoRegexProcess(); // fire-and-forget: classifies + tags unlabeled/unprocessed posts
@@ -62,13 +61,11 @@ function readFilters() {
   const entryDateTo        = el('entry-date-to').value   || null;
   const entryDateUnknown   = el('entry-date-unknown').checked;
   const entryDateImmediate = el('entry-date-immediate').checked;
-  const neighborhoodFilter = checkedValues('neighborhood-filter'); // empty = no filter active
   return { statuses, labels, labelSources, postedDays, scrapedDays,
            searchText, showDupes, onlyMisses,
            sort, priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
-           entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate,
-           neighborhoodFilter };
+           entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate };
 }
 
 function checkedValues(name) {
@@ -158,14 +155,6 @@ function applyFilters() {
           if (f.entryDateTo   && d > f.entryDateTo)   return false;
         }
       }
-    }
-
-    // Neighborhood multi-select: '__unknown__' matches posts where tags exist but neighborhood is null.
-    if (f.neighborhoodFilter.length > 0) {
-      const n = p.tags?.neighborhood || null;
-      const matched = f.neighborhoodFilter.includes(n) ||
-                      (n === null && p.tags && f.neighborhoodFilter.includes('__unknown__'));
-      if (!matched) return false;
     }
 
     return true;
@@ -292,16 +281,6 @@ function cardHTML(post) {
       if (t.price        != null) pills.push(`<span class="detail-pill">₪${t.price.toLocaleString()}</span>`);
       if (t.rooms        != null) pills.push(`<span class="detail-pill">${t.rooms} חד'</span>`);
       if (t.size         != null) pills.push(`<span class="detail-pill">${t.size} מ"ר</span>`);
-      if (t.neighborhood) {
-        const lowConf  = t.neighborhood_confidence === 'low';
-        const nClass   = lowConf ? 'detail-pill detail-pill--neighborhood-low' : 'detail-pill';
-        const nTitle   = t.neighborhood_evidence
-          ? ` title="${esc(t.neighborhood_evidence)}"`
-          : (lowConf ? ' title="Low confidence"' : '');
-        pills.push(`<span class="${nClass}"${nTitle}>${esc(t.neighborhood)}</span>`);
-      } else {
-        pills.push('<span class="detail-pill detail-pill--unknown">? Neighborhood</span>');
-      }
       if (t.roommates === true)   pills.push(`<span class="detail-pill detail-pill--roommates">Roommates</span>`);
       if (t.broker === true)      pills.push(`<span class="detail-pill detail-pill--broker" title="דמי תיווך">Broker fee</span>`);
       if (t.broker === false)     pills.push(`<span class="detail-pill detail-pill--no-broker" title="ללא דמי תיווך">No broker fee</span>`);
@@ -394,7 +373,6 @@ function bindControls() {
   el('refresh-btn').addEventListener('click', async () => {
     el('result-count').textContent = 'Refreshing…';
     await loadPosts();
-    buildNeighborhoodCheckboxes();
     applyFilters();
   });
 
@@ -452,7 +430,6 @@ async function handleCardClick(e) {
     allPosts      = allPosts.filter(p => p.post_id !== postId);
     filteredPosts = filteredPosts.filter(p => p.post_id !== postId);
     expandedPostIds.delete(postId);
-    buildNeighborhoodCheckboxes();
     applyFilters();
     return;
   }
@@ -590,13 +567,6 @@ function openTagEditor(post, cardEl) {
     </div>
   </div>
   <div class="tag-field-row">
-    <span class="tag-field-label">Neighborhood</span>
-    <div class="tag-field-inputs">
-      <input type="text" name="tag-neighborhood" class="tag-field-value tag-field-value--text" value="${esc(t.neighborhood || '')}">
-      <input type="text" name="kp-neighborhood"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.neighborhood || '')}">
-    </div>
-  </div>
-  <div class="tag-field-row">
     <span class="tag-field-label">Entry date</span>
     <div class="tag-field-inputs">
       <input type="text" name="tag-entry-date" class="tag-field-value tag-field-value--text" value="${esc(t.entry_date || '')}" placeholder="YYYY-MM-DD or immediate">
@@ -667,11 +637,10 @@ async function saveTagEdits(post, cardEl) {
   const noteVal   = str('tag-note');
 
   const corrected = {
-    price:        num('tag-price'),
-    rooms:        num('tag-rooms'),
-    size:         num('tag-size'),
-    neighborhood: str('tag-neighborhood'),
-    entry_date:   str('tag-entry-date'),
+    price:      num('tag-price'),
+    rooms:      num('tag-rooms'),
+    size:       num('tag-size'),
+    entry_date: str('tag-entry-date'),
     roommates,
     broker,
   };
@@ -690,13 +659,12 @@ async function saveTagEdits(post, cardEl) {
 
   // [ field_id, input_name, kp_name ]
   const FIELDS = [
-    ['price',        'tag-price',        'price'],
-    ['rooms',        'tag-rooms',        'rooms'],
-    ['size',         'tag-size',         'size'],
-    ['neighborhood', 'tag-neighborhood', 'neighborhood'],
-    ['entry_date',   'tag-entry-date',   'entry-date'],
-    ['roommates',    'tag-roommates',    'roommates'],
-    ['broker',       'tag-broker',       'broker'],
+    ['price',      'tag-price',      'price'],
+    ['rooms',      'tag-rooms',      'rooms'],
+    ['size',       'tag-size',       'size'],
+    ['entry_date', 'tag-entry-date', 'entry-date'],
+    ['roommates',  'tag-roommates',  'roommates'],
+    ['broker',     'tag-broker',     'broker'],
   ];
   for (const [fid, , kpName] of FIELDS) {
     if (corrected[fid] !== (prev[fid] ?? null)) missedFields.push(fid);
@@ -730,45 +698,6 @@ async function saveTagEdits(post, cardEl) {
   chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 }
 
-// Builds the neighborhood multi-select from distinct values found in IndexedDB.
-// Only looks at rental posts that already have extracted tags.
-// "Unknown" (pinned last) covers posts where tags exist but neighborhood is null.
-function buildNeighborhoodCheckboxes() {
-  const seen = new Set();
-  let hasUnknown = false;
-
-  allPosts.forEach(p => {
-    const label = p.human_label || p.ai_label;
-    if (label !== 'rental' || !p.tags) return;
-    if (p.tags.neighborhood) seen.add(p.tags.neighborhood);
-    else hasUnknown = true;
-  });
-
-  const container = el('neighborhood-filters');
-  if (seen.size === 0 && !hasUnknown) {
-    container.innerHTML = '<em style="font-size:11px;color:#aaa">No tagged posts yet</em>';
-    return;
-  }
-
-  const sorted = [...seen].sort((a, b) => a.localeCompare(b));
-  const rows = sorted.map(n => `
-    <label>
-      <input type="checkbox" name="neighborhood-filter" value="${esc(n)}">
-      ${esc(n)}
-    </label>`);
-
-  if (hasUnknown) {
-    rows.push(`
-    <label>
-      <input type="checkbox" name="neighborhood-filter" value="__unknown__">
-      Unknown
-    </label>`);
-  }
-
-  container.innerHTML = rows.join('');
-  container.querySelectorAll('input').forEach(i => i.addEventListener('change', applyFilters));
-}
-
 function resetFilters() {
   document.querySelectorAll('input[name="status"]').forEach(cb => {
     cb.checked = cb.value === 'new' || cb.value === 'interested';
@@ -793,7 +722,6 @@ function resetFilters() {
   el('rooms-max').value          = '';
   el('show-dupes').checked = false;
   el('show-only-misses').checked = false;
-  document.querySelectorAll('input[name="neighborhood-filter"]').forEach(cb => cb.checked = false);
   applyFilters();
 }
 
@@ -860,8 +788,7 @@ async function autoRegexProcess() {
 //     been verified yet
 //
 // Merge strategy: regex wins when it finds a non-null value; existing tag
-// values fill the gaps (so we never throw away legacy inferences regex can't
-// replicate from NEIGHBORHOOD_OVERRIDES alone).
+// values fill the gaps (so we never throw away tags regex can't re-derive).
 //
 // Entirely local — no API calls, no rate limits, runs instantly.
 async function regexExtractAll() {
