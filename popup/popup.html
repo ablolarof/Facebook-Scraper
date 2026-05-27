@@ -48,25 +48,8 @@
     <span id="total-stored">Total stored: —</span>
   </section>
 
-  <!-- Settings panel — toggled by the Settings link in the footer -->
-  <section id="settings-panel" class="hidden">
-    <label for="api-key-input" class="settings-label">Google Gemini API key</label>
-    <input type="password" id="api-key-input" placeholder="AIza…" autocomplete="off">
-    <div class="settings-actions">
-      <button id="save-key-btn">Save</button>
-      <button id="clear-key-btn">Clear</button>
-    </div>
-    <p id="key-status"></p>
-    <p class="settings-hint">
-      Get a free key at <code>aistudio.google.com/apikey</code>. Stored in
-      <code>chrome.storage.local</code> on this machine only. Used to auto-classify
-      scraped posts as rental or not_rental via Gemini Flash.
-    </p>
-  </section>
-
   <footer>
     <button id="open-dashboard-btn">Open Dashboard ↗</button>
-    <a href="#" id="settings-link" title="Set Gemini API key">Settings</a>
   </footer>
 
   <script type="module" src="popup.js"></script>

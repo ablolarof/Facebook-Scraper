@@ -2,8 +2,8 @@
 //
 // Runs at chrome-extension://[id]/dashboard/dashboard.html, so it shares
 // IndexedDB with background.js (same extension origin). Reads + updates posts
-// directly via lib/db.js; routes Gemini classification through background.js
-// (the service worker has the host_permissions to reach generativelanguage.googleapis.com).
+// directly via lib/db.js. Classification + tag extraction are local-only
+// (lib/regex_extractor.js) — there is no remote API in the loop anymore.
 //
 // Filtering is done in JS on the already-loaded array — no round-trips to
 // storage on each filter change.
@@ -261,10 +261,10 @@ function cardHTML(post) {
   else if (post.human_label === 'not_rental') labelTag = '<span class="tag tag--not-rental-human" title="You marked this as not rental">✗ Not rental</span>';
   else if (post.ai_label === 'rental')        labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--rental-ai" title="Regex classified as rental">Regex: Rental</span>'
-    : '<span class="tag tag--rental-ai" title="Gemini labeled this as rental">AI: Rental</span>';
+    : '<span class="tag tag--rental-ai" title="Auto-labeled (legacy)">AI: Rental</span>';
   else if (post.ai_label === 'not_rental')    labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--not-rental-ai" title="Regex classified as not rental">Regex: Not rental</span>'
-    : '<span class="tag tag--not-rental-ai" title="Gemini labeled this as not rental">AI: Not rental</span>';
+    : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">AI: Not rental</span>';
 
   // Highlight whichever label button matches the current human label.
   const rentalActive    = post.human_label === 'rental'     ? ' active' : '';
@@ -274,8 +274,8 @@ function cardHTML(post) {
 
   // Detail pills from extracted tags + ✏ edit button.
   // The ✏ button appears on all rental posts so the user can add/correct tags
-  // even before Gemini has extracted them. Corrections are stored as
-  // tags_human_override and fed back to Gemini as few-shot examples.
+  // even before regex has extracted them. Corrections are stored as
+  // tags_human_override for the training server and stage-2 feedback loop.
   const isRental = post.human_label === 'rental' || post.ai_label === 'rental';
   let tagsRow = '';
   if (isRental) {
@@ -309,7 +309,7 @@ function cardHTML(post) {
     tagsRow = `
 <div class="card-tags">
   ${pills.join('')}
-  <button class="btn-edit-tags" data-action="edit-tags" data-id="${id}" title="Add / correct tags — your fixes feed back to Gemini">✏</button>
+  <button class="btn-edit-tags" data-action="edit-tags" data-id="${id}" title="Add / correct tags — your fixes train the regex rules">✏</button>
 </div>`;
   }
 
@@ -385,7 +385,6 @@ function bindControls() {
   });
 
   el('export-btn').addEventListener('click', exportJSON);
-  el('classify-btn').addEventListener('click', classifyAndTag);
   el('regex-extract-btn').addEventListener('click', regexExtractAll);
 
   // Event delegation for card buttons.
@@ -453,9 +452,9 @@ async function handleCardClick(e) {
     // Fails silently if the server isn't running — data is safe in IndexedDB.
     chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 
-    // When manually marking as rental, run regex extraction immediately
-    // (no API call, instant). Then fall back to Gemini only if regex
-    // found nothing AND no tags already exist.
+    // When manually marking as rental, run regex extraction immediately.
+    // No API fallback — if regex finds nothing, tags stay null until the
+    // user either edits them manually or stage 2's correction loop ships.
     if (post.human_label === 'rental' && !post.tags_human_override) {
       const rt = regexExtractTags(post.text || '');
       post.regex_extracted_at = new Date().toISOString();
@@ -463,16 +462,6 @@ async function handleCardClick(e) {
         post.tags = mergeWithRegex(post.tags || null, rt);
         await savePost(post);
         applyFilters();
-      } else if (!post.tags) {
-        // Regex found nothing and no prior tags — try Gemini as fallback.
-        chrome.runtime.sendMessage({ type: 'EXTRACT_TAGS', postId: post.post_id })
-          .then(result => {
-            if (result?.ok && result.tags) {
-              post.tags = result.tags;
-              applyFilters();
-            }
-          })
-          .catch(() => {});
       }
     }
     return;
@@ -547,7 +536,7 @@ function openTagEditor(post, cardEl) {
     </label>
   </div>
   <div class="tag-editor-actions">
-    <button class="btn-tag-save"   data-action="save-tags"   data-id="${id}">Save &amp; train Gemini</button>
+    <button class="btn-tag-save"   data-action="save-tags"   data-id="${id}">Save correction</button>
     <button class="btn-tag-cancel" data-action="cancel-tags" data-id="${id}">Cancel</button>
   </div>
 </div>`;
@@ -590,7 +579,8 @@ async function saveTagEdits(post, cardEl) {
   }
 
   // Store both: tags (used for display/filters) and tags_human_override
-  // (used as few-shot examples in future Gemini extraction calls).
+  // (the persistent training-data signal — synced to the local training
+  // server and consumed by stage 2's regex-rule feedback loop).
   post.tags                = corrected;
   post.tags_human_override = corrected;
   await savePost(post);
@@ -725,17 +715,19 @@ async function autoRegexProcess() {
 // tags manually corrected by a human (i.e. tags_human_override is falsy).
 // This covers:
 //   • Posts with no tags at all
-//   • Posts with Gemini-extracted tags that haven't been verified yet
+//   • Legacy posts whose tags came from the old Gemini pipeline and haven't
+//     been verified yet
 //
-// Merge strategy: regex wins when it finds a non-null value; existing Gemini
-// values fill the gaps (so we never throw away Gemini neighbourhood inferences
-// that regex can't replicate from NEIGHBORHOOD_OVERRIDES alone).
+// Merge strategy: regex wins when it finds a non-null value; existing tag
+// values fill the gaps (so we never throw away legacy inferences regex can't
+// replicate from NEIGHBORHOOD_OVERRIDES alone).
 //
 // Entirely local — no API calls, no rate limits, runs instantly.
 async function regexExtractAll() {
   // Eligible: rental (human or AI), not yet human-corrected, not yet regex-processed.
-  // Posts with regex_extracted_at were already processed (at scrape time or a
-  // prior button press) — don't redo them; use 'Classify & Tag' for Gemini instead.
+  // Posts with regex_extracted_at were already processed (at scrape time or
+  // a prior button press) — don't redo them. To re-run on a post, clear its
+  // tags via the ✏ editor first.
   const eligible = allPosts.filter(p => {
     const label = p.human_label || p.ai_label;
     return label === 'rental' && !p.tags_human_override && !p.regex_extracted_at;
@@ -763,7 +755,7 @@ async function regexExtractAll() {
     const allNull = Object.values(regexResult).every(v => v == null);
 
     if (allNull && post.tags) {
-      // Regex found nothing new and Gemini already has data — don't overwrite.
+      // Regex found nothing new and legacy tags exist — don't overwrite.
       skipped++;
       continue;
     }
@@ -783,173 +775,8 @@ async function regexExtractAll() {
   alert(`Regex extraction complete.\n\n${lines.join('\n')}`);
 }
 
-// ── Classify & Tag (backfill) ──────────────────────────────────────────────────
-//
-// Combined two-phase operation:
-//   Phase 1 — Classify every still-unlabeled post as "rental" or "not_rental".
-//   Phase 2 — Extract structured tags (price, rooms, neighborhood…) from every
-//              rental post (human or AI labeled) that has no tags yet.
-//              This includes posts newly classified in Phase 1 AND any pre-existing
-//              rental posts that were missed in earlier runs.
-//
-// The model fallback chain (gemini-2.5-flash-lite → gemini-2.5-flash) is handled
-// inside gemini.js, so both phases benefit from it automatically.
-async function classifyAndTag() {
-  const unlabeled      = allPosts.filter(p => !p.human_label && !p.ai_label);
-  const untaggedRentals = allPosts.filter(p => {
-    const label = p.human_label || p.ai_label;
-    return label === 'rental' && !p.tags;
-  });
-
-  const needsClassify = unlabeled.length > 0;
-  const needsTagging  = untaggedRentals.length > 0;
-
-  if (!needsClassify && !needsTagging) {
-    alert('Nothing to do — all posts are labeled and all rentals are tagged.');
-    return;
-  }
-
-  // Build a clear confirm message listing exactly what will happen.
-  const lines = [];
-  if (needsClassify) lines.push(
-    `• Classify ${unlabeled.length} unlabeled post${unlabeled.length !== 1 ? 's' : ''} ` +
-    `(new rentals will also get tags extracted)`
-  );
-  if (needsTagging)  lines.push(
-    `• Extract tags from ${untaggedRentals.length} already-labeled rental post${untaggedRentals.length !== 1 ? 's' : ''}`
-  );
-
-  if (!confirm(
-    `Send to Gemini?\n\n${lines.join('\n')}\n\n` +
-    `Posts go to generativelanguage.googleapis.com using your saved API key. ` +
-    `Free tier covers ~1,500 requests/day.`
-  )) return;
-
-  const btn = el('classify-btn');
-  btn.disabled = true;
-  const originalCount = el('result-count').textContent;
-
-  let classified = 0, classifyFailed = 0;
-  let tagged = 0, tagFailed = 0;
-  let dailyQuotaExhausted = false;
-
-  // ── Phase 1: classify unlabeled posts ────────────────────────────────────────
-  for (let i = 0; i < unlabeled.length; i++) {
-    if (dailyQuotaExhausted) break;
-
-    const post = unlabeled[i];
-    el('result-count').textContent =
-      `Step 1/2 — Classifying ${i + 1} / ${unlabeled.length}… ` +
-      `(${classified} labeled, ${classifyFailed} failed)`;
-
-    let attempts = 0;
-    let success  = false;
-
-    while (attempts < 2 && !success) {
-      try {
-        const result = await chrome.runtime.sendMessage({
-          type: 'CLASSIFY_POST',
-          postId: post.post_id,
-        });
-
-        if (result?.ok && result.label) {
-          post.ai_label         = result.label;
-          post.ai_classified_at = new Date().toISOString();
-          classified++;
-          success = true;
-        } else {
-          const isRateLimit = result?.error &&
-            (result.error.includes('429') || result.error.toLowerCase().includes('quota'));
-
-          if (isRateLimit) {
-            attempts++;
-            if (attempts < 2) {
-              el('result-count').textContent = `Rate limit hit (429) — pausing 60s…`;
-              await sleep(60_000);
-              continue;
-            } else {
-              dailyQuotaExhausted = true;
-              classifyFailed += (unlabeled.length - i);
-              console.warn('[TLV Rentals] Quota exhausted. Aborting classify phase.');
-              break;
-            }
-          }
-
-          classifyFailed++;
-          if (result?.error) console.warn('[TLV Rentals] classify error:', result.error);
-          success = true;
-        }
-      } catch (err) {
-        classifyFailed++;
-        console.warn('[TLV Rentals] classify threw:', err);
-        success = true;
-      }
-    }
-  }
-
-  // ── Phase 2: extract tags for all rental posts without tags ──────────────────
-  // Includes posts newly classified in Phase 1 plus any pre-existing untagged rentals.
-  if (!dailyQuotaExhausted) {
-    const toTag = allPosts.filter(p => {
-      const label = p.human_label || p.ai_label;
-      return label === 'rental' && !p.tags;
-    });
-
-    for (let i = 0; i < toTag.length; i++) {
-      const post = toTag[i];
-      el('result-count').textContent =
-        `Step 2/2 — Extracting tags ${i + 1} / ${toTag.length}… ` +
-        `(${tagged} done, ${tagFailed} failed)`;
-
-      try {
-        const result = await chrome.runtime.sendMessage({
-          type: 'EXTRACT_TAGS',
-          postId: post.post_id,
-        });
-        if (result?.ok && result.tags) {
-          post.tags = result.tags;
-          tagged++;
-        } else {
-          tagFailed++;
-          if (result?.error) console.warn('[TLV Rentals] extract tags error:', result.error);
-        }
-      } catch (err) {
-        tagFailed++;
-        console.warn('[TLV Rentals] extract tags threw:', err);
-      }
-    }
-  }
-
-  btn.disabled = false;
-  el('result-count').textContent = originalCount;
-  buildNeighborhoodCheckboxes();
-  applyFilters();
-
-  if (dailyQuotaExhausted) {
-    alert(
-      `Paused — API quota exhausted.\n\n` +
-      `Your key returned 429 even after a 60-second cooldown. ` +
-      `Wait until your daily quota resets, then run Classify & Tag again ` +
-      `— it will pick up where it left off.`
-    );
-  } else {
-    const summaryLines = [];
-    if (classified || classifyFailed)
-      summaryLines.push(`Classification: ${classified} labeled, ${classifyFailed} failed`);
-    if (tagged || tagFailed)
-      summaryLines.push(`Tag extraction: ${tagged} tagged, ${tagFailed} failed`);
-
-    alert(
-      `Done!\n\n` +
-      summaryLines.join('\n') + '\n\n' +
-      `Spot-check AI labels with the Rental / Not rental buttons — ` +
-      `your corrections feed back as few-shot examples next time.`
-    );
-  }
-}
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function el(id) { return document.getElementById(id); }
 
