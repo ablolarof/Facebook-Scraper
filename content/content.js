@@ -118,7 +118,7 @@
       state.stopReason       = null;
       state.duplicatesInARow = 0;
       state.startTime        = Date.now(); // fresh clock for this continuation window
-      beginScrape(msg.options || {});
+      beginScrape(msg.options || {}, false); // false = don't reset _seenContainers
       sendResponse({ ok: true });
       return false;
     }
@@ -126,7 +126,7 @@
   // ──────────────────────────────────────────────────────────────────────────
 
   // ── Scrape loop ────────────────────────────────────────────────────────────
-  function beginScrape(options) {
+  function beginScrape(options, resetSeen) {
     // On /groups/feed/ (aggregated view) and on any non-group page, individual
     // cards each come from a different group — let the extractor read the
     // group from each card's source-group link. On a specific /groups/<id>/
@@ -202,7 +202,8 @@
             state.stopReason = reason || 'done';
           }
         },
-      }
+      },
+      resetSeen  // false on CONTINUE_SCRAPE, undefined (→ true) on START_SCRAPE
     );
   }
   // ──────────────────────────────────────────────────────────────────────────

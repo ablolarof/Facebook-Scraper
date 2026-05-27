@@ -207,9 +207,24 @@ window.TLVScroller = (function () {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  function startScroll(options, callbacks) {
+  function startScroll(options, callbacks, resetSeen) {
     if (_scrolling) stopScroll();
     _scrolling = true;
+
+    // Reset the per-session dedup WeakSets on a fresh START_SCRAPE.
+    // This lets posts deleted from the dashboard (individually or via Delete All)
+    // be re-sent to background.js on the next scrape — their containers are no
+    // longer tracked, so processVisible will call onNewPost for them again.
+    // background.js's dedup-hash check still suppresses posts that were NOT deleted.
+    //
+    // We do NOT reset on CONTINUE_SCRAPE (resetSeen === false) because a
+    // continue should pick up from where the previous session left off without
+    // re-processing all currently-visible posts.
+    if (resetSeen !== false) {
+      _seenTexts      = new WeakSet();
+      _seenContainers = new WeakSet();
+    }
+
     var onNewPost = callbacks.onNewPost;
 
     _observer = new MutationObserver(function () {
