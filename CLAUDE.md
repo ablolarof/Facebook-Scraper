@@ -10,7 +10,7 @@ The extension is fully offline. The only outbound traffic is to an optional loca
 
 ## Active 5-stage plan
 
-These stages are sequential. Do not start one without confirming the previous is done.
+These stages are sequential.
 
 1. **Drop Gemini entirely — regex-only pipeline** (complete as of 2026-05-26). `lib/gemini.js` deleted; `host_permissions` no longer mentions `generativelanguage.googleapis.com`; popup has no settings panel; dashboard has no "Classify & Tag" button. Classification is now `lib/regex_extractor.js` only, called inline from `background.js` on every `SAVE_POST`. Existing Gemini-extracted tags in IDB were left in place — no migration.
 2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss and record *why* the correct answer is correct. The "why" is the training signal — the user batches these and pastes them to Claude, who updates `lib/regex_extractor.js` rules accordingly.
@@ -78,8 +78,7 @@ Posts written before the rip carry Gemini-extracted tags. The `ai_classified_by`
 
 ### Neighborhood detection
 
-1. Deterministic override in `lib/neighborhood_overrides.js` — if post text contains a Hebrew neighborhood name, match with `confidence: high`.
-2. Otherwise the field stays `null`. The regex does not infer neighborhoods from street names. Stage 2 will let users teach the regex about new mappings.
+Currently doesn't work. to be dealt with in the next phase.
 
 ### Async patterns
 
