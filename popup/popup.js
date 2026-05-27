@@ -91,62 +91,6 @@ function bindButtons() {
   el('open-dashboard-btn').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
   });
-  el('settings-link').addEventListener('click', toggleSettings);
-  el('save-key-btn').addEventListener('click',   saveApiKey);
-  el('clear-key-btn').addEventListener('click',  clearApiKey);
-
-  // Show current key status as soon as the popup opens.
-  refreshKeyStatus();
-}
-
-// ── Settings panel ────────────────────────────────────────────────────────────
-async function toggleSettings(e) {
-  e.preventDefault();
-  const panel = el('settings-panel');
-  const link  = el('settings-link');
-  const willShow = panel.classList.contains('hidden');
-  panel.classList.toggle('hidden');
-  link.classList.toggle('active', willShow);
-  if (willShow) refreshKeyStatus();
-}
-
-async function saveApiKey() {
-  const key = el('api-key-input').value.trim();
-  if (!key) {
-    setKeyStatus('Enter a key first.', 'error');
-    return;
-  }
-  // Gemini keys from AI Studio are Google API keys, typically AIza… (39 chars).
-  // Warn but don't block — Google may issue keys with different prefixes too.
-  if (!key.startsWith('AIza')) {
-    if (!confirm('Gemini keys usually start with "AIza" — save anyway?')) return;
-  }
-  await chrome.storage.local.set({ gemini_api_key: key });
-  el('api-key-input').value = '';
-  setKeyStatus('Saved. New scraped posts will auto-classify.', 'ok');
-}
-
-async function clearApiKey() {
-  await chrome.storage.local.remove('gemini_api_key');
-  el('api-key-input').value = '';
-  setKeyStatus('Cleared. Auto-classification is now off.', 'ok');
-}
-
-async function refreshKeyStatus() {
-  const { gemini_api_key } = await chrome.storage.local.get('gemini_api_key');
-  if (gemini_api_key) {
-    // Show only the last 4 chars so the user can confirm without seeing it all.
-    const tail = gemini_api_key.slice(-4);
-    setKeyStatus(`Key set (…${tail}). Auto-classification is on.`, 'ok');
-  } else {
-    setKeyStatus('No key set. Auto-classification is off.', '');
-  }
-}
-
-function setKeyStatus(text, tone) {
-  const node = el('key-status');
-  node.textContent = text;
-  node.className = tone; // 'ok' | 'error' | ''
 }
 
 async function startScrape() {

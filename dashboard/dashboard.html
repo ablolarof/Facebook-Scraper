@@ -12,8 +12,7 @@
     <span class="logo">🏠 TLV Rentals</span>
     <span id="result-count">Loading…</span>
     <button id="refresh-btn">↺ Refresh</button>
-    <button id="classify-btn" title="Step 1: classify every unlabeled post as rental or not. Step 2: extract price, rooms, size, neighborhood and entry date from all rental posts that are not yet tagged.">Classify &amp; Tag</button>
-    <button id="regex-extract-btn" title="Run regex-based tag extraction on all rental posts that haven't been manually corrected. Instant — no API calls. Regex wins when it finds something; existing Gemini values fill the gaps.">Regex Extract</button>
+    <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
     <button id="export-btn">Export JSON</button>
   </header>
 

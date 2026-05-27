@@ -13,15 +13,15 @@
 (function () {
 
   // ── Classification strategy ────────────────────────────────────────────────
-  // Stage 1 saves EVERY extracted post unfiltered. Rental-vs-not classification
-  // happens after the fact:
-  //   1. Background.js auto-classifies each new post with Gemini Flash (if
-  //      the user has set an API key in popup settings).
-  //   2. The user can override/confirm AI labels with Rental/Not Rental buttons
-  //      on each dashboard card. Those human labels become the few-shot
-  //      examples Gemini sees for future classification calls.
-  // No rule-based regex filter runs here anymore — Gemini with a growing pool
-  // of human-labeled examples replaces it.
+  // The content script saves EVERY extracted post unfiltered. Classification
+  // happens inside background.js using lib/regex_extractor.js — a local
+  // Hebrew/English regex pass that runs synchronously on save. No network
+  // calls in the loop.
+  //
+  // Posts the regex can't classify with confidence stay unlabeled until a
+  // human marks them on the dashboard. Stage 2 of the project plan adds a
+  // "mark as regex miss + explain" mechanism that feeds those gaps back
+  // into the regex rules.
   // ──────────────────────────────────────────────────────────────────────────
 
   // ── Page helpers ───────────────────────────────────────────────────────────

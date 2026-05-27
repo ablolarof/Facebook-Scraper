@@ -139,69 +139,6 @@ footer {
 }
 #open-dashboard-btn:hover { background: #d0e8ff; }
 
-#settings-link {
-  font-size: 12px;
-  color: #aaa;
-  text-decoration: none;
-  white-space: nowrap;
-}
-#settings-link:hover { color: #666; }
-
-/* ── Settings panel ──────────────────────────────────────────────────────── */
-#settings-panel {
-  background: #fafbfc;
-}
-.settings-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: #444;
-  margin-bottom: 5px;
-}
-#api-key-input {
-  width: 100%;
-  padding: 5px 7px;
-  border: 1px solid #ccd0d5;
-  border-radius: 5px;
-  font-size: 12px;
-  font-family: 'SF Mono', 'Consolas', monospace;
-}
-#api-key-input:focus { outline: none; border-color: #1877f2; }
-
-.settings-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-#save-key-btn  { background: #1877f2; color: #fff; }
-#save-key-btn:hover  { background: #1558b0; }
-#clear-key-btn { background: #e4e6eb; color: #333; }
-#clear-key-btn:hover { background: #d0d2d7; }
-
-#key-status {
-  font-size: 11px;
-  color: #65676b;
-  margin-top: 6px;
-  min-height: 14px;
-}
-#key-status.ok    { color: #00a651; }
-#key-status.error { color: #e41e3f; }
-
-.settings-hint {
-  font-size: 11px;
-  color: #8a8d91;
-  margin-top: 8px;
-  line-height: 1.4;
-}
-.settings-hint code {
-  background: #eef0f2;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 10px;
-}
-
-/* Settings link active state */
-#settings-link.active { color: #1877f2; font-weight: 600; }
 
 /* ── Utility ─────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
