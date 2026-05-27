@@ -500,5 +500,149 @@ body {
 .date-range-row span { font-size: 13px; color: #65676b; }
 
 
+/* ── Regex miss badges ────────────────────────────────────────────────────── */
+.tag--regex-miss     { background: #fff3cd; color: #7d4608; border: 1px solid #ffc107; }
+.tag--regex-exported { background: #e4e6eb; color: #65676b; }
+
+/* Flag button — amber when inactive (no miss set), darker when miss is flagged */
+.btn-flag        { background: #fff3cd; color: #7d4608; }
+.btn-flag.active { background: #ffc107; color: #5a4600; font-weight: 900; }
+.btn-flag:hover  { filter: brightness(0.92); }
+
+/* ── Inline flag editor ───────────────────────────────────────────────────── */
+.card-flag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  background: #fffbf0;
+  border-radius: 6px;
+  border: 1px solid #ffc107;
+}
+.flag-editor-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.flag-editor-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a8d91;
+  display: block;
+  margin-bottom: 3px;
+}
+.flag-editor-wide { flex: 1; min-width: 100%; }
+.flag-editor-wide input,
+.flag-editor-wide select {
+  width: 100%;
+  padding: 4px 5px;
+  border: 1px solid #ccd0d5;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1c1e21;
+  background: #fff;
+  margin-top: 3px;
+}
+.flag-editor-wide label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a8d91;
+  flex-direction: column;
+}
+.flag-fields-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.flag-fields-grid label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #1c1e21;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+/* ── Re-test diff modal ───────────────────────────────────────────────────── */
+.retest-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.retest-modal {
+  background: #fff;
+  border-radius: 10px;
+  padding: 24px 28px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.retest-modal h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  color: #1c1e21;
+}
+.retest-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.retest-list li {
+  font-size: 13px;
+  padding: 6px 10px;
+  background: #f0f2f5;
+  border-radius: 5px;
+  color: #1c1e21;
+}
+.retest-note {
+  font-size: 11px;
+  color: #8a8d91;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.retest-actions {
+  display: flex;
+  gap: 8px;
+}
+.btn-retest-apply {
+  flex: 1;
+  padding: 8px;
+  background: #1877f2;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.btn-retest-apply:hover { background: #1565c0; }
+.btn-retest-cancel {
+  flex: 1;
+  padding: 8px;
+  background: #e4e6eb;
+  color: #606770;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.btn-retest-cancel:hover { background: #ccd0d5; }
+
 /* ── Utility ──────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

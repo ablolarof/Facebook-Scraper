@@ -13,6 +13,8 @@
     <span id="result-count">Loading…</span>
     <button id="refresh-btn">↺ Refresh</button>
     <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
+    <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
+    <button id="retest-regex-btn" title="Re-run the current regex on all posts and preview what would change before committing">Re-test Regex</button>
     <button id="export-btn">Export JSON</button>
   </header>
 
@@ -82,6 +84,9 @@
         <h3>Show</h3>
         <label class="toggle-label">
           <input type="checkbox" id="show-dupes"> Duplicates
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="show-only-misses"> Regex misses only
         </label>
       </div>
 

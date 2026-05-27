@@ -50,6 +50,7 @@ function readFilters() {
   const scrapedDays       = scrapedDaysRaw === '' ? null : (parseInt(scrapedDaysRaw) || null);
   const searchText        = el('text-search').value.trim().toLowerCase();
   const showDupes         = el('show-dupes').checked;
+  const onlyMisses        = el('show-only-misses').checked;
   const sort              = el('sort-by').value;
   const priceMin          = parseFloat(el('price-min').value)  || null;
   const priceMax          = parseFloat(el('price-max').value)  || null;
@@ -63,7 +64,7 @@ function readFilters() {
   const entryDateImmediate = el('entry-date-immediate').checked;
   const neighborhoodFilter = checkedValues('neighborhood-filter'); // empty = no filter active
   return { statuses, labels, labelSources, postedDays, scrapedDays,
-           searchText, showDupes,
+           searchText, showDupes, onlyMisses,
            sort, priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
            entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate,
@@ -90,6 +91,7 @@ function applyFilters() {
   filteredPosts = allPosts.filter(p => {
     if (!f.statuses.includes(p.status || 'new')) return false;
     if (!f.showDupes && p.is_duplicate) return false;
+    if (f.onlyMisses && !p.regex_miss) return false;
     if (!f.labels.includes(effectiveLabel(p, f.labelSources))) return false;
     if (f.searchText && !(p.text || '').toLowerCase().includes(f.searchText)) return false;
 
@@ -254,6 +256,11 @@ function cardHTML(post) {
 
   const statusClass = `status-${post.status || 'new'}`;
   const dupeTag     = post.is_duplicate ? '<span class="tag tag--dupe">Dupe</span>' : '';
+  const missTag     = post.regex_miss
+    ? (post.regex_miss.exported_at
+        ? '<span class="tag tag--regex-exported" title="Already included in an export">⚑ Sent</span>'
+        : '<span class="tag tag--regex-miss" title="Flagged as regex miss — not yet exported">⚑ Miss</span>')
+    : '';
 
   // Pick the most authoritative badge to show on the card.
   let labelTag = '<span class="tag tag--unlabeled">Unlabeled</span>';
@@ -320,7 +327,7 @@ function cardHTML(post) {
     <div class="card-meta">
       <span class="card-group" title="${esc(post.group_name || post.group_id || '')}">${esc(post.group_name || post.group_id || '?')}</span>
       ${timeBlock}
-      ${dupeTag}${labelTag}
+      ${dupeTag}${labelTag}${missTag}
     </div>
     ${textBlock}
     ${tagsRow}
@@ -338,6 +345,7 @@ function cardHTML(post) {
     </div>
     <div class="card-actions-row">
       <button class="btn-action btn-dupe${post.is_duplicate ? ' active' : ''}" data-action="toggle-dupe" data-id="${id}" title="Mark as duplicate — hidden from the default view unless 'Duplicates' is checked in the sidebar">⊘ Dupe</button>
+      <button class="btn-action btn-flag${post.regex_miss ? ' active' : ''}" data-action="flag-post" data-id="${id}" title="Flag as regex miss — record what the regex got wrong and why">⚑ Flag</button>
       <button class="btn-action btn-delete" data-action="delete" data-id="${id}" title="Permanently remove this post. It will be re-scraped if it still appears on Facebook.">🗑 Delete</button>
     </div>
   </div>
@@ -345,11 +353,18 @@ function cardHTML(post) {
 }
 
 function updateResultCount() {
-  const labeled   = allPosts.filter(p => p.human_label).length;
-  const aiLabeled = allPosts.filter(p => !p.human_label && p.ai_label).length;
+  const labeled        = allPosts.filter(p => p.human_label).length;
+  const aiLabeled      = allPosts.filter(p => !p.human_label && p.ai_label).length;
+  const unexportedMiss = allPosts.filter(p => p.regex_miss && !p.regex_miss.exported_at).length;
   el('result-count').textContent =
     `Showing ${filteredPosts.length} of ${allPosts.length} posts ` +
     `· ${labeled} human-labeled · ${aiLabeled} AI-labeled`;
+  const exportMissBtn = el('export-misses-btn');
+  if (exportMissBtn) {
+    exportMissBtn.textContent = unexportedMiss > 0
+      ? `Export Misses (${unexportedMiss})`
+      : 'Export Misses';
+  }
 }
 
 // ── Controls ───────────────────────────────────────────────────────────────────
@@ -358,7 +373,7 @@ function bindControls() {
   document.querySelectorAll(
     'input[name="status"], input[name="label"], input[name="label-source"], ' +
     'input[name="roommates-filter"], input[name="broker-filter"], ' +
-    '#show-dupes, #posted-days-filter, #scraped-days-filter, #sort-by, ' +
+    '#show-dupes, #show-only-misses, #posted-days-filter, #scraped-days-filter, #sort-by, ' +
     '#entry-date-unknown, #entry-date-immediate'
   ).forEach(input => input.addEventListener('change', applyFilters));
 
@@ -385,6 +400,8 @@ function bindControls() {
   });
 
   el('export-btn').addEventListener('click', exportJSON);
+  el('export-misses-btn').addEventListener('click', exportMisses);
+  el('retest-regex-btn').addEventListener('click', retestRegex);
   el('regex-extract-btn').addEventListener('click', regexExtractAll);
 
   // Event delegation for card buttons.
@@ -469,6 +486,28 @@ async function handleCardClick(e) {
 
   if (action === 'toggle-dupe') {
     post.is_duplicate = !post.is_duplicate;
+    await savePost(post);
+    applyFilters();
+    return;
+  }
+
+  if (action === 'flag-post') {
+    openFlagEditor(post, btn.closest('.card'));
+    return;
+  }
+
+  if (action === 'save-flag') {
+    await saveFlagEdits(post, btn.closest('.card'));
+    return;
+  }
+
+  if (action === 'cancel-flag') {
+    applyFilters();
+    return;
+  }
+
+  if (action === 'clear-flag') {
+    post.regex_miss = null;
     await savePost(post);
     applyFilters();
     return;
@@ -652,6 +691,7 @@ function resetFilters() {
   el('rooms-min').value          = '';
   el('rooms-max').value          = '';
   el('show-dupes').checked = false;
+  el('show-only-misses').checked = false;
   document.querySelectorAll('input[name="neighborhood-filter"]').forEach(cb => cb.checked = false);
   applyFilters();
 }
@@ -775,6 +815,311 @@ async function regexExtractAll() {
   alert(`Regex extraction complete.\n\n${lines.join('\n')}`);
 }
 
+
+// ── Flag editor ───────────────────────────────────────────────────────────────
+//
+// Replaces the bottom card-actions-row (dupe/flag/delete) with an inline form
+// so the user can record what regex got wrong and why. applyFilters() restores
+// the normal card view on save or cancel.
+
+function openFlagEditor(post, cardEl) {
+  const actionRows = cardEl.querySelectorAll('.card-actions-row');
+  const lastRow    = actionRows[actionRows.length - 1];
+  if (!lastRow) return;
+
+  const m    = post.regex_miss || {};
+  const id   = esc(post.post_id);
+  const cl   = m.correct_label || '';
+
+  const ALL_FIELDS = [
+    ['classification', 'Classification (rental vs not rental)'],
+    ['price',          'Price'],
+    ['rooms',          'Rooms'],
+    ['size',           'Size'],
+    ['neighborhood',   'Neighborhood'],
+    ['entry_date',     'Entry date'],
+    ['roommates',      'Roommates'],
+    ['broker',         'Broker fee'],
+    ['other',          'Other'],
+  ];
+  const missedFields = m.missed_fields || [];
+
+  const checkboxes = ALL_FIELDS.map(([val, label]) => `
+    <label><input type="checkbox" name="miss-field" value="${val}" ${missedFields.includes(val) ? 'checked' : ''}> ${label}</label>
+  `).join('');
+
+  lastRow.outerHTML = `
+<div class="card-flag-editor">
+  <div class="flag-editor-row">
+    <span class="flag-editor-label">What did regex get wrong?</span>
+    <div class="flag-fields-grid">${checkboxes}</div>
+  </div>
+  <div class="flag-editor-row">
+    <label class="flag-editor-wide">Correct label
+      <select name="flag-correct-label">
+        <option value=""           ${cl === ''           ? 'selected' : ''}>— unchanged —</option>
+        <option value="rental"     ${cl === 'rental'     ? 'selected' : ''}>✓ Rental</option>
+        <option value="not_rental" ${cl === 'not_rental' ? 'selected' : ''}>✗ Not rental</option>
+      </select>
+    </label>
+  </div>
+  <div class="flag-editor-row">
+    <label class="flag-editor-wide">Key phrase — the text that should have triggered a match
+      <input type="text" name="flag-key-phrase" value="${esc(m.key_phrase || '')}" placeholder="e.g. להשכרה לזמן קצר">
+    </label>
+  </div>
+  <div class="flag-editor-row">
+    <label class="flag-editor-wide">Note (optional)
+      <input type="text" name="flag-note" value="${esc(m.note || '')}" placeholder="any extra context">
+    </label>
+  </div>
+  <div class="tag-editor-actions">
+    <button class="btn-tag-save"   data-action="save-flag"  data-id="${id}">Save flag</button>
+    <button class="btn-tag-cancel" data-action="clear-flag" data-id="${id}">Clear flag</button>
+    <button class="btn-tag-cancel" data-action="cancel-flag" data-id="${id}">Cancel</button>
+  </div>
+</div>`;
+}
+
+async function saveFlagEdits(post, cardEl) {
+  const editor = cardEl.querySelector('.card-flag-editor');
+  if (!editor) return;
+
+  const missedFields  = [...editor.querySelectorAll('[name="miss-field"]:checked')].map(cb => cb.value);
+  const correctLabel  = editor.querySelector('[name="flag-correct-label"]')?.value || null;
+  const keyPhrase     = (editor.querySelector('[name="flag-key-phrase"]')?.value || '').trim() || null;
+  const note          = (editor.querySelector('[name="flag-note"]')?.value || '').trim() || null;
+
+  post.regex_miss = {
+    correct_label: correctLabel || null,
+    missed_fields: missedFields,
+    key_phrase:    keyPhrase,
+    note,
+    flagged_at:    post.regex_miss?.flagged_at || new Date().toISOString(),
+    exported_at:   null, // reset so this correction is included in the next export
+  };
+
+  await savePost(post);
+  chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
+  updateResultCount();
+  applyFilters();
+}
+
+// ── Export misses ─────────────────────────────────────────────────────────────
+//
+// Collects all posts with an unexported regex_miss, formats them as a
+// ready-to-paste Claude prompt (including the current regex source), downloads
+// as a .txt file, then stamps each post with exported_at so they won't appear
+// in the next export unless re-flagged.
+
+async function exportMisses() {
+  const toExport = allPosts.filter(p => p.regex_miss && !p.regex_miss.exported_at);
+  if (toExport.length === 0) {
+    alert('No unexported regex misses.\n\nFlag some posts with ⚑, or all flagged posts have already been exported.\nRe-flag a post to include it in the next export.');
+    return;
+  }
+
+  let regexSource = '';
+  try {
+    const r = await fetch(chrome.runtime.getURL('lib/regex_extractor.js'));
+    regexSource = await r.text();
+  } catch { regexSource = '[could not read lib/regex_extractor.js]'; }
+
+  const now   = new Date().toISOString().slice(0, 10);
+  const lines = [
+    `# Regex Miss Report — ${now}`,
+    `## ${toExport.length} post${toExport.length !== 1 ? 's' : ''} flagged`,
+    '',
+  ];
+
+  toExport.forEach((post, i) => {
+    const m = post.regex_miss;
+    lines.push('---');
+    lines.push(`### Miss ${i + 1}  (post_id: ${post.post_id})`);
+    if (m.correct_label)        lines.push(`Correct label:  ${m.correct_label}`);
+    if (m.missed_fields?.length) lines.push(`Missed fields:  ${m.missed_fields.join(', ')}`);
+    if (m.key_phrase)            lines.push(`Key phrase:     "${m.key_phrase}"`);
+    if (m.note)                  lines.push(`Note:           ${m.note}`);
+    lines.push('');
+    lines.push('Post text:');
+    lines.push('"""');
+    lines.push((post.text || '').slice(0, 600));
+    if ((post.text || '').length > 600) lines.push('…[truncated]');
+    lines.push('"""');
+    lines.push('');
+  });
+
+  lines.push('---');
+  lines.push('');
+  lines.push('## Current lib/regex_extractor.js');
+  lines.push('');
+  lines.push('```js');
+  lines.push(regexSource);
+  lines.push('```');
+  lines.push('');
+  lines.push('---');
+  lines.push('Please update lib/regex_extractor.js to handle the cases above.');
+  lines.push('Constraints: regex-only, no API calls, no new imports. Return the complete updated file.');
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const url  = URL.createObjectURL(blob);
+  const fname = `tlv-regex-misses-${now}.txt`;
+  const a = Object.assign(document.createElement('a'), { href: url, download: fname });
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  const exportedAt = new Date().toISOString();
+  for (const post of toExport) {
+    post.regex_miss = { ...post.regex_miss, exported_at: exportedAt };
+    await savePost(post);
+  }
+  updateResultCount();
+  applyFilters();
+}
+
+// ── Re-test regex ─────────────────────────────────────────────────────────────
+//
+// Runs the current regex on every post and computes a diff vs what's stored.
+// Shows a confirmation modal before writing anything. Human labels and manual
+// tag corrections (tags_human_override) are never overwritten.
+
+async function retestRegex() {
+  const diff = {
+    resolved:        [],  // had regex_miss whose correct_label now matches new regex
+    newlyClassified: [],  // was unlabeled, regex now has an opinion
+    reclassified:    [],  // had a regex label, new regex disagrees
+    newlyTagged:     [],  // rental post, tags would change
+  };
+
+  for (const post of allPosts) {
+    const newLabel = regexClassifyPost(post.text || '');
+
+    // Resolve miss: new regex agrees with what the human said was correct.
+    if (post.regex_miss?.correct_label && !post.human_label) {
+      if (newLabel === post.regex_miss.correct_label) {
+        diff.resolved.push(post);
+      }
+    }
+
+    // Newly classified (unlabeled post, regex now returns something).
+    if (!post.human_label && !post.ai_label && newLabel) {
+      diff.newlyClassified.push({ post, newLabel });
+      continue; // don't also count as reclassified
+    }
+
+    // Reclassified (regex label changes, no human override).
+    if (!post.human_label && post.ai_label &&
+        post.ai_classified_by === 'regex' && newLabel && newLabel !== post.ai_label) {
+      diff.reclassified.push({ post, oldLabel: post.ai_label, newLabel });
+    }
+
+    // Tag updates on rental posts not manually corrected.
+    const effectiveLabel = post.human_label || post.ai_label || newLabel;
+    if (effectiveLabel === 'rental' && !post.tags_human_override) {
+      const newTags = regexExtractTags(post.text || '');
+      if (newTags) {
+        const existing = post.tags || {};
+        const changed  = Object.keys(newTags).some(k => {
+          const nv = newTags[k]; const ov = existing[k];
+          return nv != null && nv !== ov;
+        });
+        if (changed) diff.newlyTagged.push({ post, newTags });
+      }
+    }
+  }
+
+  const total = diff.resolved.length + diff.newlyClassified.length +
+                diff.reclassified.length + diff.newlyTagged.length;
+
+  if (total === 0) {
+    alert('Re-test complete: the current regex produces the same results as before — no changes.');
+    return;
+  }
+
+  showRetestModal(diff);
+}
+
+function showRetestModal(diff) {
+  const items = [];
+  if (diff.resolved.length)
+    items.push(`✓ ${diff.resolved.length} regex miss${diff.resolved.length !== 1 ? 'es' : ''} resolved — flags will be cleared`);
+  if (diff.newlyClassified.length)
+    items.push(`+ ${diff.newlyClassified.length} post${diff.newlyClassified.length !== 1 ? 's' : ''} newly classified`);
+  if (diff.reclassified.length)
+    items.push(`~ ${diff.reclassified.length} post${diff.reclassified.length !== 1 ? 's' : ''} reclassified (label changes)`);
+  if (diff.newlyTagged.length)
+    items.push(`✎ ${diff.newlyTagged.length} rental post${diff.newlyTagged.length !== 1 ? 's' : ''} with updated tags`);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'retest-overlay';
+  overlay.innerHTML = `
+<div class="retest-modal">
+  <h2>Re-test Results</h2>
+  <ul class="retest-list">
+    ${items.map(i => `<li>${esc(i)}</li>`).join('')}
+  </ul>
+  <p class="retest-note">Human labels and manually corrected tags are never overwritten.</p>
+  <div class="retest-actions">
+    <button class="btn-retest-apply">Apply changes</button>
+    <button class="btn-retest-cancel">Cancel</button>
+  </div>
+</div>`;
+
+  document.body.appendChild(overlay);
+  overlay.querySelector('.btn-retest-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('.btn-retest-apply').addEventListener('click', async () => {
+    overlay.remove();
+    await commitRetest(diff);
+  });
+}
+
+async function commitRetest(diff) {
+  const now = new Date().toISOString();
+  let count = 0;
+
+  for (const post of diff.resolved) {
+    post.regex_miss = null;
+    await savePost(post);
+    count++;
+  }
+
+  for (const { post, newLabel } of diff.newlyClassified) {
+    post.ai_label         = newLabel;
+    post.ai_classified_by = 'regex';
+    post.ai_classified_at = now;
+    if (newLabel === 'rental') {
+      const rt = regexExtractTags(post.text || '');
+      post.regex_extracted_at = now;
+      if (rt && Object.values(rt).some(v => v != null)) {
+        post.tags = mergeWithRegex(post.tags || null, rt);
+      }
+    }
+    await savePost(post);
+    count++;
+  }
+
+  for (const { post, newLabel } of diff.reclassified) {
+    post.ai_label         = newLabel;
+    post.ai_classified_by = 'regex';
+    post.ai_classified_at = now;
+    await savePost(post);
+    count++;
+  }
+
+  for (const { post, newTags } of diff.newlyTagged) {
+    post.tags               = mergeWithRegex(post.tags || null, newTags);
+    post.regex_extracted_at = now;
+    await savePost(post);
+    count++;
+  }
+
+  await loadPosts();
+  buildNeighborhoodCheckboxes();
+  applyFilters();
+  alert(`Re-test applied: ${count} post${count !== 1 ? 's' : ''} updated.`);
+}
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
