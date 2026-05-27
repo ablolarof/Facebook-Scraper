@@ -77,7 +77,7 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[id]/dashboard/dashboard.html`).
 
 - **Regex Extract** — runs the local regex extractor on every rental post that hasn't been processed yet. Instant.
-- **Rental / Not rental** buttons — override the AI label. Marking a post as rental triggers regex tag extraction inline.
+- **Rental / Not rental** buttons — override the auto-label. Marking a post as rental triggers regex tag extraction inline.
 - **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` and synced to the training server.
 - **Show more / Show less** — long card text is line-clamped to 3 lines; click to expand. Expanded state persists across re-renders.
 - **⊘ Dupe** — toggle a post's duplicate flag manually.
@@ -171,13 +171,10 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 
 ## Roadmap
 
-The codebase is in stage 1 of a 5-stage plan:
-
-1. **Drop Gemini entirely — regex-only pipeline.** *(Done as of 2026-05-26.)*
-2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss + record why the correct answer is correct. Corrections feed back into regex rule updates.
-3. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
-4. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
-5. **Fix the group-name capture bug.** Some group names come through truncated.
+1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
+2. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
+3. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
+4. **Fix the group-name capture bug.** Some group names come through truncated.
 
 ---
 

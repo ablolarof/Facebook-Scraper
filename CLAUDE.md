@@ -85,7 +85,7 @@ Posts are deduplicated by content hash (text + first image URL). Cross-group rep
 - `regexClassifyPost(text)` returns `'rental'`, `'not_rental'`, or `null` for ambiguous text. Null is honest — the dashboard surfaces null as "Unlabeled".
 - `regexExtractTags(text)` returns `{price, rooms, size, neighborhood, neighborhood_confidence, neighborhood_evidence, entry_date, roommates, broker}` with nulls where the regex cannot determine the field.
 
-Posts written before the rip carry Gemini-extracted tags. The `ai_classified_by` field is `'regex'` for new posts, unset for legacy ones. The dashboard labels legacy posts "AI: Rental" with an "Auto-labeled (legacy)" tooltip.
+Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classified_by` field is `'regex'` for new posts, unset for legacy ones. The dashboard labels legacy posts "Legacy: Rental" with an "Auto-labeled (legacy)" tooltip.
 
 ### Neighborhood detection
 

@@ -76,7 +76,7 @@ async function handleSavePost(post) {
     if (existing && existing.post_id !== post.post_id) {
       post.is_duplicate = true;
       post.duplicate_of = existing.post_id;
-      // A duplicate has identical text → inherit the original's AI label so
+      // A duplicate has identical text → inherit the original's label so
       // we don't waste cycles re-classifying the same content.
       post.ai_label         = existing.ai_label         ?? null;
       post.ai_classified_at = existing.ai_classified_at ?? null;

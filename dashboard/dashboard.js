@@ -268,10 +268,10 @@ function cardHTML(post) {
   else if (post.human_label === 'not_rental') labelTag = '<span class="tag tag--not-rental-human" title="You marked this as not rental">✗ Not rental</span>';
   else if (post.ai_label === 'rental')        labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--rental-ai" title="Regex classified as rental">Regex: Rental</span>'
-    : '<span class="tag tag--rental-ai" title="Auto-labeled (legacy)">AI: Rental</span>';
+    : '<span class="tag tag--rental-ai" title="Auto-labeled (legacy)">Legacy: Rental</span>';
   else if (post.ai_label === 'not_rental')    labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--not-rental-ai" title="Regex classified as not rental">Regex: Not rental</span>'
-    : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">AI: Not rental</span>';
+    : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">Legacy: Not rental</span>';
 
   // Highlight whichever label button matches the current human label.
   const rentalActive    = post.human_label === 'rental'     ? ' active' : '';
