@@ -41,6 +41,8 @@ window.TLVScroller = (function () {
     'a[href*="/permalink/"]',
     'a[href*="story_fbid="]',
     'a[href*="/share/p/"]',
+    'a[href*="/share/v/"]',
+    'a[href*="/videos/"]',
     'a[href*="/commerce/listing/"]',
     'a[href*="/marketplace/item/"]',
   ].join(', ');

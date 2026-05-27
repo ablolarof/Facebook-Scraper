@@ -16,6 +16,8 @@ import {
   deletePost,
 } from '../lib/db.js';
 
+import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
+
 let allPosts      = [];   // every record from IndexedDB
 let filteredPosts = [];   // subset after applying sidebar filters
 const expandedPostIds = new Set(); // post_ids whose full text is currently visible
@@ -26,6 +28,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   buildNeighborhoodCheckboxes();
   applyFilters();
   bindControls();
+  autoRegexProcess(); // fire-and-forget: classifies + tags unlabeled/unprocessed posts
 });
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -39,7 +42,12 @@ function readFilters() {
   const statuses          = checkedValues('status');
   const labels            = checkedValues('label');        // 'rental' | 'not_rental' | 'unlabeled'
   const labelSources      = checkedValues('label-source'); // 'human' | 'ai'
-  const days              = parseInt(el('days-filter').value) || 30;
+  // Posted-within / scraped-within are independent filters. Blank input = no
+  // filter on that axis. Both can be active simultaneously (AND).
+  const postedDaysRaw     = el('posted-days-filter').value.trim();
+  const scrapedDaysRaw    = el('scraped-days-filter').value.trim();
+  const postedDays        = postedDaysRaw  === '' ? null : (parseInt(postedDaysRaw)  || null);
+  const scrapedDays       = scrapedDaysRaw === '' ? null : (parseInt(scrapedDaysRaw) || null);
   const searchText        = el('text-search').value.trim().toLowerCase();
   const showDupes         = el('show-dupes').checked;
   const sort              = el('sort-by').value;
@@ -54,7 +62,8 @@ function readFilters() {
   const entryDateUnknown   = el('entry-date-unknown').checked;
   const entryDateImmediate = el('entry-date-immediate').checked;
   const neighborhoodFilter = checkedValues('neighborhood-filter'); // empty = no filter active
-  return { statuses, labels, labelSources, days, searchText, showDupes,
+  return { statuses, labels, labelSources, postedDays, scrapedDays,
+           searchText, showDupes,
            sort, priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
            entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate,
@@ -76,8 +85,7 @@ function effectiveLabel(post, sources) {
 }
 
 function applyFilters() {
-  const f        = readFilters();
-  const cutoffMs = Date.now() - f.days * 86400 * 1000;
+  const f = readFilters();
 
   filteredPosts = allPosts.filter(p => {
     if (!f.statuses.includes(p.status || 'new')) return false;
@@ -85,14 +93,18 @@ function applyFilters() {
     if (!f.labels.includes(effectiveLabel(p, f.labelSources))) return false;
     if (f.searchText && !(p.text || '').toLowerCase().includes(f.searchText)) return false;
 
-    // Use the LATER of posted_at and scraped_at so a freshly-scraped post is
-    // never filtered out just because Facebook's "Xy ago" string parsed wrong.
-    // The "Posted within N days" label is approximate — a recently-saved post
-    // should always be visible regardless of FB's reported posting age.
-    const postedTs  = p.posted_at  ? new Date(p.posted_at).getTime()  : 0;
-    const scrapedTs = p.scraped_at ? new Date(p.scraped_at).getTime() : 0;
-    const ts = Math.max(postedTs, scrapedTs);
-    if (ts && ts < cutoffMs) return false;
+    // Independent time filters. Each axis filters against its own timestamp.
+    // Posts missing posted_at slip through the posted-within filter — Facebook's
+    // "Xy ago" string occasionally fails to parse, and hiding those posts would
+    // make recently-scraped items vanish for opaque reasons.
+    if (f.postedDays != null) {
+      const postedTs = p.posted_at ? new Date(p.posted_at).getTime() : 0;
+      if (postedTs && postedTs < Date.now() - f.postedDays * 86400 * 1000) return false;
+    }
+    if (f.scrapedDays != null) {
+      const scrapedTs = p.scraped_at ? new Date(p.scraped_at).getTime() : 0;
+      if (scrapedTs && scrapedTs < Date.now() - f.scrapedDays * 86400 * 1000) return false;
+    }
 
     // ── Tag-based filters (skip posts with no tags when a tag filter is active) ──
     if (f.priceMin !== null) {
@@ -158,14 +170,20 @@ function applyFilters() {
   });
 
   // ── Sort ────────────────────────────────────────────────────────────────────
+  // Scrape-based sorts are the default; posted-based are explicit so users can
+  // pick whichever timestamp matters to them (e.g. "newest in my feed" vs
+  // "freshest listings on Facebook").
   filteredPosts.sort((a, b) => {
     switch (f.sort) {
-      case 'oldest':     return (a.scraped_at || '').localeCompare(b.scraped_at || '');
-      case 'price-asc':  return sortNullsLast(a.tags?.price, b.tags?.price,  1);
-      case 'price-desc': return sortNullsLast(a.tags?.price, b.tags?.price, -1);
-      case 'rooms-asc':  return sortNullsLast(a.tags?.rooms, b.tags?.rooms,  1);
-      case 'rooms-desc': return sortNullsLast(a.tags?.rooms, b.tags?.rooms, -1);
-      default:           return (b.scraped_at || '').localeCompare(a.scraped_at || '');
+      case 'oldest-scraped': return (a.scraped_at || '').localeCompare(b.scraped_at || '');
+      case 'newest-posted':  return (b.posted_at  || '').localeCompare(a.posted_at  || '');
+      case 'oldest-posted':  return (a.posted_at  || '').localeCompare(b.posted_at  || '');
+      case 'price-asc':      return sortNullsLast(a.tags?.price, b.tags?.price,  1);
+      case 'price-desc':     return sortNullsLast(a.tags?.price, b.tags?.price, -1);
+      case 'rooms-asc':      return sortNullsLast(a.tags?.rooms, b.tags?.rooms,  1);
+      case 'rooms-desc':     return sortNullsLast(a.tags?.rooms, b.tags?.rooms, -1);
+      case 'newest-scraped':
+      default:               return (b.scraped_at || '').localeCompare(a.scraped_at || '');
     }
   });
 
@@ -221,9 +239,19 @@ function cardHTML(post) {
        <button class="btn-see-more" data-action="toggle-text" data-id="${esc(post.post_id)}">${isExpanded ? 'Show less ▲' : 'Show more ▼'}</button>`
     : `<div class="card-text expanded">${esc(cleanText)}</div>`;
 
-  // Use the later of posted_at / scraped_at so a bogus old posted_at (parsed
-  // wrong from FB's aria-label) doesn't render as "9148d ago" on the card.
-  const timeAgo     = relativeTime(bestDisplayTime(post));
+  // Show BOTH timestamps so the user can tell "freshly posted to FB" apart from
+  // "freshly pulled into my dashboard". Absolute time is in the tooltip.
+  // Posts where parseRelativeTime failed and fell back to "now" will show
+  // identical Posted/Scraped values — that's accurate, not a bug.
+  const postedAgo  = post.posted_at  ? relativeTime(post.posted_at)  : null;
+  const scrapedAgo = post.scraped_at ? relativeTime(post.scraped_at) : null;
+  const timeParts = [];
+  if (postedAgo)  timeParts.push(`<span class="card-time-part" title="Posted at ${esc(formatAbsoluteTime(post.posted_at))}">Posted ${postedAgo}</span>`);
+  if (scrapedAgo) timeParts.push(`<span class="card-time-part" title="Scraped at ${esc(formatAbsoluteTime(post.scraped_at))}">Scraped ${scrapedAgo}</span>`);
+  const timeBlock = timeParts.length
+    ? `<span class="card-time">${timeParts.join(' · ')}</span>`
+    : '';
+
   const statusClass = `status-${post.status || 'new'}`;
   const dupeTag     = post.is_duplicate ? '<span class="tag tag--dupe">Dupe</span>' : '';
 
@@ -231,8 +259,12 @@ function cardHTML(post) {
   let labelTag = '<span class="tag tag--unlabeled">Unlabeled</span>';
   if (post.human_label === 'rental')          labelTag = '<span class="tag tag--rental-human" title="You marked this as rental">✓ Rental</span>';
   else if (post.human_label === 'not_rental') labelTag = '<span class="tag tag--not-rental-human" title="You marked this as not rental">✗ Not rental</span>';
-  else if (post.ai_label === 'rental')        labelTag = '<span class="tag tag--rental-ai" title="Gemini labeled this as rental">AI: Rental</span>';
-  else if (post.ai_label === 'not_rental')    labelTag = '<span class="tag tag--not-rental-ai" title="Gemini labeled this as not rental">AI: Not rental</span>';
+  else if (post.ai_label === 'rental')        labelTag = post.ai_classified_by === 'regex'
+    ? '<span class="tag tag--rental-ai" title="Regex classified as rental">Regex: Rental</span>'
+    : '<span class="tag tag--rental-ai" title="Gemini labeled this as rental">AI: Rental</span>';
+  else if (post.ai_label === 'not_rental')    labelTag = post.ai_classified_by === 'regex'
+    ? '<span class="tag tag--not-rental-ai" title="Regex classified as not rental">Regex: Not rental</span>'
+    : '<span class="tag tag--not-rental-ai" title="Gemini labeled this as not rental">AI: Not rental</span>';
 
   // Highlight whichever label button matches the current human label.
   const rentalActive    = post.human_label === 'rental'     ? ' active' : '';
@@ -287,7 +319,7 @@ function cardHTML(post) {
   <div class="card-body">
     <div class="card-meta">
       <span class="card-group" title="${esc(post.group_name || post.group_id || '')}">${esc(post.group_name || post.group_id || '?')}</span>
-      <span class="card-time">${timeAgo}</span>
+      ${timeBlock}
       ${dupeTag}${labelTag}
     </div>
     ${textBlock}
@@ -300,7 +332,9 @@ function cardHTML(post) {
       <button class="btn-action btn-interested" data-action="interested" data-id="${id}">Interested</button>
       <button class="btn-action btn-seen"       data-action="seen"       data-id="${id}">Seen</button>
       <button class="btn-action btn-hide"       data-action="hidden"     data-id="${id}">Hide</button>
-      <a class="btn-action btn-open" href="${esc(post.permalink || '#')}" target="_blank" rel="noopener noreferrer">Open ↗</a>
+      ${post.permalink
+          ? `<a class="btn-action btn-open" href="${esc(post.permalink)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`
+          : `<span class="btn-action btn-open" style="opacity:0.35;cursor:not-allowed" title="No direct link captured">Open ↗</span>`}
     </div>
     <div class="card-actions-row">
       <button class="btn-action btn-dupe${post.is_duplicate ? ' active' : ''}" data-action="toggle-dupe" data-id="${id}" title="Mark as duplicate — hidden from the default view unless 'Duplicates' is checked in the sidebar">⊘ Dupe</button>
@@ -324,9 +358,14 @@ function bindControls() {
   document.querySelectorAll(
     'input[name="status"], input[name="label"], input[name="label-source"], ' +
     'input[name="roommates-filter"], input[name="broker-filter"], ' +
-    '#show-dupes, #days-filter, #sort-by, ' +
+    '#show-dupes, #posted-days-filter, #scraped-days-filter, #sort-by, ' +
     '#entry-date-unknown, #entry-date-immediate'
   ).forEach(input => input.addEventListener('change', applyFilters));
+
+  // Number inputs should also re-filter on every keystroke (consistent with
+  // price/rooms range below) so users see results update as they type.
+  el('posted-days-filter').addEventListener('input',  applyFilters);
+  el('scraped-days-filter').addEventListener('input', applyFilters);
 
   el('entry-date-from').addEventListener('input', applyFilters);
   el('entry-date-to').addEventListener('input',   applyFilters);
@@ -347,6 +386,7 @@ function bindControls() {
 
   el('export-btn').addEventListener('click', exportJSON);
   el('classify-btn').addEventListener('click', classifyAndTag);
+  el('regex-extract-btn').addEventListener('click', regexExtractAll);
 
   // Event delegation for card buttons.
   el('card-grid').addEventListener('click', handleCardClick);
@@ -409,16 +449,31 @@ async function handleCardClick(e) {
     await savePost(post);
     applyFilters();
 
-    // When manually marking as rental, kick off tag extraction if not yet done.
-    if (post.human_label === 'rental' && !post.tags) {
-      chrome.runtime.sendMessage({ type: 'EXTRACT_TAGS', postId: post.post_id })
-        .then(result => {
-          if (result?.ok && result.tags) {
-            post.tags = result.tags;
-            applyFilters(); // re-render cards with the new pills
-          }
-        })
-        .catch(() => {}); // fire-and-forget; errors are logged in background
+    // Sync the new label to the local training server (fire-and-forget).
+    // Fails silently if the server isn't running — data is safe in IndexedDB.
+    chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
+
+    // When manually marking as rental, run regex extraction immediately
+    // (no API call, instant). Then fall back to Gemini only if regex
+    // found nothing AND no tags already exist.
+    if (post.human_label === 'rental' && !post.tags_human_override) {
+      const rt = regexExtractTags(post.text || '');
+      post.regex_extracted_at = new Date().toISOString();
+      if (rt && Object.values(rt).some(v => v != null)) {
+        post.tags = mergeWithRegex(post.tags || null, rt);
+        await savePost(post);
+        applyFilters();
+      } else if (!post.tags) {
+        // Regex found nothing and no prior tags — try Gemini as fallback.
+        chrome.runtime.sendMessage({ type: 'EXTRACT_TAGS', postId: post.post_id })
+          .then(result => {
+            if (result?.ok && result.tags) {
+              post.tags = result.tags;
+              applyFilters();
+            }
+          })
+          .catch(() => {});
+      }
     }
     return;
   }
@@ -540,6 +595,9 @@ async function saveTagEdits(post, cardEl) {
   post.tags_human_override = corrected;
   await savePost(post);
   applyFilters(); // re-render cards to show updated pills + "Corrected" badge
+
+  // Sync the corrected tags + label to the local training server (fire-and-forget).
+  chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 }
 
 // Builds the neighborhood multi-select from distinct values found in IndexedDB.
@@ -595,8 +653,9 @@ function resetFilters() {
   el('entry-date-to').value            = '';
   el('entry-date-unknown').checked     = true;
   el('entry-date-immediate').checked   = true;
-  el('days-filter').value = '30';
-  el('sort-by').value    = 'newest';
+  el('posted-days-filter').value  = '30';
+  el('scraped-days-filter').value = '';   // no scrape-time filter by default
+  el('sort-by').value             = 'newest-scraped';
   el('text-search').value = '';
   el('price-min').value   = '';
   el('price-max').value          = '';
@@ -619,6 +678,109 @@ async function exportJSON() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ── Auto regex process (runs silently on every load / refresh) ───────────────
+//
+// Classifies unlabeled posts with regex and tags unprocessed rental posts.
+// Runs fire-and-forget so the dashboard renders immediately.
+async function autoRegexProcess() {
+  let changed = false;
+  for (const post of allPosts) {
+    // 1. Classify unlabeled posts with regex
+    if (!post.human_label && !post.ai_label) {
+      const label = regexClassifyPost(post.text || '');
+      if (label) {
+        post.ai_label         = label;
+        post.ai_classified_by = 'regex';
+        post.ai_classified_at = new Date().toISOString();
+        changed = true;
+        // fall through to tagging below if rental
+      }
+    }
+    // 2. Tag rental posts that haven't been regex-processed yet
+    const label = post.human_label || post.ai_label;
+    if (label === 'rental' && !post.tags_human_override && !post.regex_extracted_at) {
+      const rt = regexExtractTags(post.text || '');
+      post.regex_extracted_at = new Date().toISOString();
+      if (rt && Object.values(rt).some(v => v != null)) {
+        post.tags = mergeWithRegex(post.tags || null, rt);
+      }
+      changed = true;
+      await savePost(post);
+    } else if (!post.human_label && post.ai_label && post.ai_classified_by === 'regex') {
+      // Newly regex-classified (step 1 above) but not yet saved
+      await savePost(post);
+    }
+  }
+  if (changed) {
+    buildNeighborhoodCheckboxes();
+    applyFilters();
+  }
+}
+
+// ── Regex Extract (backfill) ──────────────────────────────────────────────────
+//
+// Runs the local regex extractor on every rental post that has NOT had its
+// tags manually corrected by a human (i.e. tags_human_override is falsy).
+// This covers:
+//   • Posts with no tags at all
+//   • Posts with Gemini-extracted tags that haven't been verified yet
+//
+// Merge strategy: regex wins when it finds a non-null value; existing Gemini
+// values fill the gaps (so we never throw away Gemini neighbourhood inferences
+// that regex can't replicate from NEIGHBORHOOD_OVERRIDES alone).
+//
+// Entirely local — no API calls, no rate limits, runs instantly.
+async function regexExtractAll() {
+  // Eligible: rental (human or AI), not yet human-corrected, not yet regex-processed.
+  // Posts with regex_extracted_at were already processed (at scrape time or a
+  // prior button press) — don't redo them; use 'Classify & Tag' for Gemini instead.
+  const eligible = allPosts.filter(p => {
+    const label = p.human_label || p.ai_label;
+    return label === 'rental' && !p.tags_human_override && !p.regex_extracted_at;
+  });
+
+  if (eligible.length === 0) {
+    alert('Nothing to do — all rental posts already have human-verified tags.\n\nTo re-run regex on a post, clear its tags via the ✏ editor first.');
+    return;
+  }
+
+  const btn = el('regex-extract-btn');
+  btn.disabled = true;
+
+  let updated = 0;
+  let skipped = 0; // regex found nothing and post already had tags
+
+  for (let i = 0; i < eligible.length; i++) {
+    const post = eligible[i];
+    el('result-count').textContent =
+      `Regex extracting ${i + 1} / ${eligible.length}… (${updated} updated)`;
+
+    const regexResult = regexExtractTags(post.text || '');
+    if (!regexResult) { skipped++; continue; }
+
+    const allNull = Object.values(regexResult).every(v => v == null);
+
+    if (allNull && post.tags) {
+      // Regex found nothing new and Gemini already has data — don't overwrite.
+      skipped++;
+      continue;
+    }
+
+    const merged = mergeWithRegex(post.tags || null, regexResult);
+    post.tags = merged;
+    await savePost(post);
+    updated++;
+  }
+
+  btn.disabled = false;
+  buildNeighborhoodCheckboxes();
+  applyFilters();
+
+  const lines = [`Updated: ${updated} post${updated !== 1 ? 's' : ''}`];
+  if (skipped) lines.push(`Skipped: ${skipped} (regex found nothing new)`);
+  alert(`Regex extraction complete.\n\n${lines.join('\n')}`);
 }
 
 // ── Classify & Tag (backfill) ──────────────────────────────────────────────────
@@ -805,13 +967,17 @@ function formatEntryDate(isoStr) {
   } catch { return isoStr; }
 }
 
-// Returns whichever of posted_at / scraped_at is more recent (and sane).
-// Guards against parseRelativeTime bugs that put posted_at decades in the past.
-function bestDisplayTime(post) {
-  const postedTs  = post.posted_at  ? new Date(post.posted_at).getTime()  : 0;
-  const scrapedTs = post.scraped_at ? new Date(post.scraped_at).getTime() : 0;
-  const ts = Math.max(postedTs, scrapedTs);
-  return ts ? new Date(ts).toISOString() : null;
+// Absolute time for the card tooltip — "25 May 2026, 14:32".
+// Used in the hover-title on each Posted/Scraped chip; relative time on its own
+// hides whether "3d ago" means 3 days or 3 days plus several hours.
+function formatAbsoluteTime(isoStr) {
+  if (!isoStr) return '';
+  try {
+    return new Date(isoStr).toLocaleString('en-GB', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return isoStr; }
 }
 
 function relativeTime(isoStr) {

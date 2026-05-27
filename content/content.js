@@ -209,4 +209,25 @@
 
   console.log('[TLV Rentals] content script ready on', location.pathname);
 
+  // ── Auto-scrape via URL parameter ──────────────────────────────────────────
+  // When the URL contains ?tlv_auto_scrape=1 (e.g. added by a scheduled task),
+  // start scraping automatically without needing the popup. Runs for 30 minutes
+  // with a high duplicate threshold so it captures a full hour of new posts.
+  (function checkAutoScrape() {
+    if (!/[?&]tlv_auto_scrape=/.test(location.search)) return;
+    // Wait 4 seconds for Facebook's feed to render before scrolling starts.
+    setTimeout(function () {
+      if (state.running) return; // already running — do nothing
+      state           = freshState();
+      state.running   = true;
+      state.startTime = Date.now();
+      beginScrape({
+        maxDurationMinutes:  30,
+        duplicateThreshold: 200, // scroll past up to 200 consecutive dupes before stopping
+      });
+      console.log('[TLV Rentals] Auto-scrape started via URL parameter (30 min)');
+    }, 4000);
+  })();
+  // ──────────────────────────────────────────────────────────────────────────
+
 })();

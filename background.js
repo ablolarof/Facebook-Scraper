@@ -1,18 +1,22 @@
 // background.js — Service worker
 //
-// Three responsibilities:
+// Four responsibilities:
 //   1. Open the dashboard tab when the popup requests it.
 //   2. Receive scraped posts from the content script, run deduplication,
 //      and save to IndexedDB.
 //   3. Auto-classify each newly saved post with Gemini Flash (fire-and-forget,
 //      runs only if the user has stored an API key in chrome.storage.local).
+//   4. Sync human labels and tag corrections to the local training server
+//      (http://localhost:8765) whenever the user labels a post or corrects tags.
+//      Fire-and-forget — fails silently if the server isn't running. Data is
+//      always safe in IndexedDB; the server is just a durable training copy.
 //
 // Why handle DB + classification here instead of in the content script?
 // Content scripts run in the page's origin (facebook.com), so their
 // `indexedDB` would be facebook.com's storage — not the extension's. The
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard. It also has the host_permissions to reach
-// generativelanguage.googleapis.com, which content scripts do not.
+// generativelanguage.googleapis.com and localhost, which content scripts do not.
 
 import {
   savePost,
@@ -24,6 +28,8 @@ import {
 } from './lib/db.js';
 import { computeDedupHash } from './lib/dedup.js';
 import { classifyPost, extractPostTags } from './lib/gemini.js';
+import { regexClassifyPost, regexExtractTags, mergeWithRegex }
+  from './lib/regex_extractor.js';
 
 // ── Message routing ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -61,6 +67,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(err   => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
+
+  // Dashboard fires this after every human label or tag correction.
+  // We forward it to the local training server (fire-and-forget).
+  if (message.type === 'SYNC_LABEL') {
+    syncToTrainingServer(message.post).catch(() => {}); // silent if server is down
+    sendResponse({ ok: true });
+    return false;
+  }
 });
 
 // ── Save + dedup + auto-classify ─────────────────────────────────────────────
@@ -84,6 +98,22 @@ async function handleSavePost(post) {
       // don't waste an API call re-classifying the same content.
       post.ai_label         = existing.ai_label         ?? null;
       post.ai_classified_at = existing.ai_classified_at ?? null;
+
+      // Back-fill missing fields on the original record if this scrape found them.
+      // This fixes posts stored before the /share/v/ and /videos/ selectors were added:
+      // re-scraping them now will patch the permalink and author URL in place.
+      let existingUpdated = false;
+      if (!existing.permalink && post.permalink) {
+        existing.permalink = post.permalink;
+        existingUpdated = true;
+      }
+      if (!existing.author_profile_url && post.author_profile_url) {
+        existing.author_profile_url = post.author_profile_url;
+        existingUpdated = true;
+      }
+      if (existingUpdated) {
+        await savePost(existing);
+      }
     } else {
       post.is_duplicate = false;
       post.duplicate_of = null;
@@ -91,13 +121,29 @@ async function handleSavePost(post) {
 
     await savePost(post);
 
-    // Fire-and-forget auto-classification. We don't await it so the content
-    // script gets its response immediately (classification can take ~1s and
-    // would block the scrape loop otherwise).
+    // Try regex classification first (instant, no quota).
+    // If regex is confident, set ai_label + run regex tag extraction right here.
+    // Only fall back to Gemini when regex returns null (ambiguous post).
     if (!post.is_duplicate && !post.ai_label && !post.human_label) {
-      autoClassify(post.post_id).catch(err =>
-        console.warn('[TLV Rentals] auto-classify failed:', err.message)
-      );
+      const regexLabel = regexClassifyPost(post.text || '');
+      if (regexLabel) {
+        post.ai_label          = regexLabel;
+        post.ai_classified_by  = 'regex';
+        post.ai_classified_at  = new Date().toISOString();
+        if (regexLabel === 'rental') {
+          const rt = regexExtractTags(post.text || '');
+          post.regex_extracted_at = new Date().toISOString();
+          if (rt && Object.values(rt).some(v => v != null)) {
+            post.tags = mergeWithRegex(null, rt);
+          }
+        }
+        await savePost(post);
+      } else {
+        // Regex couldn't decide — hand off to Gemini (fire-and-forget).
+        autoClassify(post.post_id).catch(err =>
+          console.warn('[TLV Rentals] auto-classify failed:', err.message)
+        );
+      }
     }
 
     return { ok: true, is_duplicate: post.is_duplicate };
@@ -169,7 +215,9 @@ async function autoExtractTags(postId) {
   if (!apiKey) return;
 
   const post = await getPost(postId);
-  if (!post || post.tags) return; // already tagged
+  // Skip if regex already extracted tags — avoids spending Gemini quota
+  // on posts that are already partially or fully tagged.
+  if (!post || post.tags) return;
 
   const label = post.human_label || post.ai_label;
   if (label !== 'rental') return; // never tag non-rentals
@@ -207,4 +255,28 @@ async function extractTagsOne(postId) {
 async function getStoredApiKey() {
   const { gemini_api_key } = await chrome.storage.local.get('gemini_api_key');
   return gemini_api_key || null;
+}
+
+// ── Training server sync ──────────────────────────────────────────────────────
+//
+// Sends a labeled post to the local training server so it is persisted outside
+// Chrome's storage. Called fire-and-forget — if the server is not running the
+// fetch will throw and we swallow the error. The post is always safe in IDB.
+const TRAINING_SERVER = 'http://localhost:8765';
+
+async function syncToTrainingServer(post) {
+  await fetch(`${TRAINING_SERVER}/label`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      post_id:             post.post_id,
+      text:                post.text,
+      author_name:         post.author_name   ?? null,
+      group_name:          post.group_name    ?? null,
+      human_label:         post.human_label   ?? null,
+      tags_human_override: post.tags_human_override ?? null,
+      scraped_at:          post.scraped_at    ?? null,
+      is_duplicate:        post.is_duplicate  ?? false,
+    }),
+  });
 }
