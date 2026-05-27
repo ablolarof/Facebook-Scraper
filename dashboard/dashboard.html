@@ -13,6 +13,8 @@
     <span id="result-count">Loading…</span>
     <button id="refresh-btn">↺ Refresh</button>
     <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
+    <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
+    <button id="retest-regex-btn" title="Re-run the current regex on all posts and preview what would change before committing">Re-test Regex</button>
     <button id="export-btn">Export JSON</button>
   </header>
 
@@ -83,6 +85,9 @@
         <label class="toggle-label">
           <input type="checkbox" id="show-dupes"> Duplicates
         </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="show-only-misses"> Regex misses only
+        </label>
       </div>
 
       <div class="filter-group">
@@ -126,12 +131,6 @@
         </div>
         <label><input type="checkbox" id="entry-date-unknown" checked> Include unknown</label>
         <label><input type="checkbox" id="entry-date-immediate" checked> Include immediate</label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Neighborhood</h3>
-        <!-- Populated dynamically by dashboard.js from distinct values in IndexedDB -->
-        <div id="neighborhood-filters"><em style="font-size:11px;color:#aaa">No tagged posts yet</em></div>
       </div>
 
       <button id="reset-filters-btn">Reset Filters</button>

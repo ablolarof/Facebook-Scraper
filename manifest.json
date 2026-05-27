@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "TLV Rentals",
+  "name": "TLV Rentals [dev]",
   "version": "0.1.0",
   "description": "Scrape and track Tel Aviv apartment rental listings from Facebook groups",
 
   "permissions": ["storage", "tabs"],
   "host_permissions": [
-    "https://www.facebook.com/*",
-    "http://localhost:8765/*"
+    "https://www.facebook.com/*"
   ],
 
   "action": {

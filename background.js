@@ -7,18 +7,12 @@
 //   3. Auto-classify each newly saved post with the local regex extractor
 //      (lib/regex_extractor.js). Posts the regex can't classify stay
 //      unlabeled until a human (or stage-2 mechanism) labels them.
-//   4. Sync human labels and tag corrections to the local training server
-//      (http://localhost:8765) whenever the user labels a post or corrects
-//      tags. Fire-and-forget — fails silently if the server isn't running.
-//      Data is always safe in IndexedDB; the server is just a durable
-//      training copy.
 //
 // Why handle DB + classification here instead of in the content script?
 // Content scripts run in the page's origin (facebook.com), so their
 // `indexedDB` would be facebook.com's storage — not the extension's. The
 // service worker always runs at the extension origin, so its IndexedDB is
-// shared with the dashboard. It also has the host_permissions to reach
-// localhost, which content scripts do not.
+// shared with the dashboard.
 
 import { savePost, findByDedupHash, countPosts } from './lib/db.js';
 import { computeDedupHash } from './lib/dedup.js';
@@ -49,13 +43,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Dashboard fires this after every human label or tag correction.
-  // We forward it to the local training server (fire-and-forget).
-  if (message.type === 'SYNC_LABEL') {
-    syncToTrainingServer(message.post).catch(() => {}); // silent if server is down
-    sendResponse({ ok: true });
-    return false;
-  }
 });
 
 // ── Save + dedup + regex classify ────────────────────────────────────────────
@@ -76,7 +63,7 @@ async function handleSavePost(post) {
     if (existing && existing.post_id !== post.post_id) {
       post.is_duplicate = true;
       post.duplicate_of = existing.post_id;
-      // A duplicate has identical text → inherit the original's AI label so
+      // A duplicate has identical text → inherit the original's label so
       // we don't waste cycles re-classifying the same content.
       post.ai_label         = existing.ai_label         ?? null;
       post.ai_classified_at = existing.ai_classified_at ?? null;
@@ -132,26 +119,3 @@ async function handleSavePost(post) {
   }
 }
 
-// ── Training server sync ─────────────────────────────────────────────────────
-//
-// Sends a labeled post to the local training server so it is persisted outside
-// Chrome's storage. Called fire-and-forget — if the server is not running the
-// fetch will throw and we swallow the error. The post is always safe in IDB.
-const TRAINING_SERVER = 'http://localhost:8765';
-
-async function syncToTrainingServer(post) {
-  await fetch(`${TRAINING_SERVER}/label`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      post_id:             post.post_id,
-      text:                post.text,
-      author_name:         post.author_name   ?? null,
-      group_name:          post.group_name    ?? null,
-      human_label:         post.human_label   ?? null,
-      tags_human_override: post.tags_human_override ?? null,
-      scraped_at:          post.scraped_at    ?? null,
-      is_duplicate:        post.is_duplicate  ?? false,
-    }),
-  });
-}
