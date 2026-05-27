@@ -36,6 +36,12 @@ window.TLVExtractor = (function () {
       'a[href*="/share/p/"]:not([href*="comment_id"])',
       'a[href*="/commerce/listing/"]',
       'a[href*="/marketplace/item/"]',
+      // Groups-feed timestamp links use ?multi_permalinks=POST_ID instead of /posts/
+      'a[href*="multi_permalinks="]:not([href*="comment_id"])',
+      // Photo-album links: ?set=pcb.POST_ID — the numeric ID after pcb. IS the parent post ID.
+      // Note: /videos/<user>/pcb.<id>/ path-style links (Reels) don't match because
+      // they lack the "set=" prefix, so this selector does not re-introduce Reels pollution.
+      'a[href*="set=pcb."]',
     ].join(', '),
 
     // Fallback: same URL patterns but allow comment_id (a comment's timestamp
@@ -48,12 +54,25 @@ window.TLVExtractor = (function () {
       'a[href*="/share/p/"]',
       'a[href*="/commerce/listing/"]',
       'a[href*="/marketplace/item/"]',
+      'a[href*="multi_permalinks="]',
+      'a[href*="set=pcb."]',
     ].join(', '),
 
-    // Full post body text. Both attribute variants are tried:
-    //   data-ad-preview        — legacy renderer
-    //   data-ad-comet-preview  — Comet (newer) renderer
-    postText: '[data-ad-preview="message"], [data-ad-comet-preview="message"]',
+    // Full post body text. Three rendering paths:
+    //   data-ad-preview="message"       — legacy renderer (individual group pages)
+    //   data-ad-comet-preview="message" — Comet renderer (same pages, newer build)
+    //   data-ad-rendering-role="story_message" — aggregated /groups/feed/ renderer
+    //
+    // The :not(:has(…)) guard prevents matching the story_message wrapper when a
+    // legacy element is nested inside it, so querySelector always returns the most
+    // specific (innermost) element and innerText captures only the post body.
+    // Requires Chrome 105+ for :has() — all supported Chromium builds qualify.
+    postText: [
+      '[data-ad-preview="message"]',
+      '[data-ad-comet-preview="message"]',
+      '[data-ad-rendering-role="story_message"]' +
+        ':not(:has([data-ad-preview="message"],[data-ad-comet-preview="message"]))',
+    ].join(', '),
 
     // Author profile link. Within a group context the href is:
     //   /groups/GROUP_ID/user/USER_ID/
@@ -122,7 +141,9 @@ window.TLVExtractor = (function () {
       try {
         const probe = new URL(rawHref, location.origin);
         pathLooksValid = POST_URL_PATH_RE.test(probe.pathname)
-                      || probe.searchParams.has('story_fbid');
+                      || probe.searchParams.has('story_fbid')
+                      || probe.searchParams.has('multi_permalinks')
+                      || (probe.searchParams.has('set') && (probe.searchParams.get('set') || '').startsWith('pcb.'));
       } catch (_) { pathLooksValid = false; }
 
       if (pathLooksValid) {
@@ -137,11 +158,56 @@ window.TLVExtractor = (function () {
         // points directly to the post, not to a particular comment.
         try {
           const u = new URL(rawHref, location.origin);
-          ['comment_id', 'reply_comment_id', 'ref', 'mibextid'].forEach(function (p) {
-            u.searchParams.delete(p);
-          });
-          permalink = u.origin + u.pathname;
-          if (!permalink.endsWith('/')) permalink += '/';
+          const multiPL = u.searchParams.get('multi_permalinks');
+          const pcbSet  = u.searchParams.get('set');
+          const pcbId   = (pcbSet && pcbSet.startsWith('pcb.')) ? pcbSet.slice(4) : null;
+          if (multiPL) {
+            // Timestamp links on /groups/feed/ use ?multi_permalinks=POST_ID.
+            // Convert to canonical /groups/GROUP_ID/posts/POST_ID/ using the
+            // source group link visible in the same card. Falls back to
+            // keeping the ?multi_permalinks= param when no group ID is found.
+            let gid = (pageGroupId && pageGroupId !== 'feed') ? pageGroupId : null;
+            if (!gid) {
+              const glEl = cardEl.querySelector(SEL.sourceGroupLink);
+              if (glEl) {
+                const gm = (glEl.href || '').match(/\/groups\/([^/?#]+)/);
+                if (gm) gid = gm[1];
+              }
+            }
+            if (gid) {
+              permalink = 'https://www.facebook.com/groups/' + gid + '/posts/' + multiPL + '/';
+            } else {
+              permalink = u.origin + u.pathname + '?multi_permalinks=' + multiPL;
+            }
+          } else if (pcbId) {
+            // Photo-album links (?set=pcb.POST_ID) — the numeric ID after pcb. IS
+            // the parent post ID. Build a canonical group permalink using whatever
+            // group-ID signal we can find: page URL > author link > source group link.
+            let gid = (pageGroupId && pageGroupId !== 'feed') ? pageGroupId : null;
+            if (!gid) {
+              const gm = author_profile_url.match(/\/groups\/([^/?#]+)\//);
+              if (gm) gid = gm[1];
+            }
+            if (!gid) {
+              const glEl = cardEl.querySelector(SEL.sourceGroupLink);
+              if (glEl) {
+                const gm2 = (glEl.href || '').match(/\/groups\/([^/?#]+)/);
+                if (gm2) gid = gm2[1];
+              }
+            }
+            if (gid) {
+              permalink = 'https://www.facebook.com/groups/' + gid + '/posts/' + pcbId + '/';
+            } else {
+              // No group ID found — keep the photo-set URL as a last resort.
+              permalink = u.origin + u.pathname + '?set=' + encodeURIComponent(pcbSet);
+            }
+          } else {
+            ['comment_id', 'reply_comment_id', 'ref', 'mibextid'].forEach(function (p) {
+              u.searchParams.delete(p);
+            });
+            permalink = u.origin + u.pathname;
+            if (!permalink.endsWith('/')) permalink += '/';
+          }
         } catch (_) { permalink = rawHref; }
 
         // The post_id link may not BE the timestamp link (e.g. it's the
@@ -166,7 +232,7 @@ window.TLVExtractor = (function () {
       // Diagnostic: log what anchors WERE present so a live scrape with
       // DevTools open shows which kinds of cards are losing permalinks.
       try {
-        const anchorTypes = { posts: 0, permalink: 0, story_fbid: 0, share_p: 0, videos: 0, commerce: 0, marketplace: 0, other: 0 };
+        const anchorTypes = { posts: 0, permalink: 0, story_fbid: 0, share_p: 0, videos: 0, commerce: 0, marketplace: 0, multi_permalinks: 0, pcb_set: 0, other: 0 };
         const anchors = cardEl.querySelectorAll('a[href]');
         for (let ai = 0; ai < anchors.length; ai++) {
           const h = anchors[ai].getAttribute('href') || '';
@@ -177,6 +243,8 @@ window.TLVExtractor = (function () {
           else if (h.indexOf('/videos/')             !== -1) anchorTypes.videos++;
           else if (h.indexOf('/commerce/listing/')   !== -1) anchorTypes.commerce++;
           else if (h.indexOf('/marketplace/item/')   !== -1) anchorTypes.marketplace++;
+          else if (h.indexOf('multi_permalinks=')    !== -1) anchorTypes.multi_permalinks++;
+          else if (h.indexOf('set=pcb.')             !== -1) anchorTypes.pcb_set++;
           else                                                anchorTypes.other++;
         }
         console.warn('[TLV Rentals] Hash-fallback used (no usable permalink found).', {
@@ -203,7 +271,20 @@ window.TLVExtractor = (function () {
     let group_name = pageGroupName;
 
     if (!pageGroupId && SEL.sourceGroupLink) {
-      const groupLinkEl = find(cardEl, SEL.sourceGroupLink, 'sourceGroupLink');
+      // Search within cardEl first, then walk up. On the aggregated /groups/feed/
+      // the post header (profile_name → h3 a group link) can sit one ancestor
+      // above the tight card boundary the scroller returns. Stop before crossing
+      // into a multi-post ancestor so we don't pick up a neighbouring card's group.
+      let groupLinkEl = cardEl.querySelector(SEL.sourceGroupLink);
+      if (!groupLinkEl) {
+        let ancestor = cardEl.parentElement;
+        for (let _gi = 0; _gi < 8 && ancestor && ancestor !== document.body; _gi++) {
+          if (ancestor.querySelectorAll(SEL.postText).length > 1) break;
+          groupLinkEl = ancestor.querySelector(SEL.sourceGroupLink);
+          if (groupLinkEl) break;
+          ancestor = ancestor.parentElement;
+        }
+      }
       if (groupLinkEl) {
         group_name = groupLinkEl.textContent.trim();
         const m = (groupLinkEl.href || '').match(/\/groups\/([^/?#]+)/);
@@ -278,6 +359,10 @@ window.TLVExtractor = (function () {
       if (u.pathname.indexOf(groupPathFragment) !== -1) return el;
       if (u.pathname.indexOf('/commerce/listing/') !== -1) return el;
       if (u.pathname.indexOf('/marketplace/item/') !== -1) return el;
+      // Photo-album links don't carry /groups/<id>/ in their path, but the
+      // pcb ID IS the post ID, so accept them regardless of group context.
+      const setP = u.searchParams.get('set');
+      if (setP && setP.startsWith('pcb.')) return el;
     }
     return null;
   }
@@ -298,6 +383,10 @@ window.TLVExtractor = (function () {
       if (m5) return 'mp_' + m5[1];
       const fbid = u.searchParams.get('story_fbid');
       if (fbid) return fbid;
+      const multiPL = u.searchParams.get('multi_permalinks');
+      if (multiPL) return multiPL;
+      const setParam = u.searchParams.get('set');
+      if (setParam && setParam.startsWith('pcb.')) return setParam.slice(4);
       // Last resort: hash the URL so we always return something unique
       return url.replace(/[^a-zA-Z0-9]/g, '').slice(-20) || null;
     } catch (e) {
@@ -342,7 +431,9 @@ window.TLVExtractor = (function () {
       if (primaryIso) return primaryIso;
     }
 
-    const POST_TEXT_SEL = '[data-ad-preview="message"], [data-ad-comet-preview="message"]';
+    // Keep in sync with SEL.postText above — used here only to count distinct
+    // posts in the widening scope so we stop before reading a neighbour's timestamp.
+    const POST_TEXT_SEL = SEL.postText;
     const tested = new Set();   // dedupe link tests across widening scopes
     let scope = cardEl;
 

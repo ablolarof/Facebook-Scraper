@@ -768,7 +768,6 @@ async function autoRegexProcess() {
     }
   }
   if (changed) {
-    buildNeighborhoodCheckboxes();
     applyFilters();
   }
 }
@@ -830,7 +829,6 @@ async function regexExtractAll() {
   }
 
   btn.disabled = false;
-  buildNeighborhoodCheckboxes();
   applyFilters();
 
   const lines = [`Updated: ${updated} post${updated !== 1 ? 's' : ''}`];
@@ -1066,7 +1064,6 @@ async function commitRetest(diff) {
   }
 
   await loadPosts();
-  buildNeighborhoodCheckboxes();
   applyFilters();
   alert(`Re-test applied: ${count} post${count !== 1 ? 's' : ''} updated.`);
 }

@@ -24,7 +24,23 @@ window.TLVScroller = (function () {
   var _seenContainers  = new WeakSet();  // post containers already extracted
 
   // Selector for the post body container Facebook renders on every group post.
-  var POST_TEXT_SEL = '[data-ad-preview="message"], [data-ad-comet-preview="message"]';
+  //
+  // Three rendering paths exist:
+  //   data-ad-preview="message"        — legacy renderer (individual group pages)
+  //   data-ad-comet-preview="message"  — Comet renderer (same pages, newer build)
+  //   data-ad-rendering-role="story_message" — aggregated /groups/feed/ renderer
+  //
+  // The :not(:has(…)) guard on story_message prevents double-matching cards
+  // that render BOTH a story_message wrapper AND a legacy data-ad-preview child.
+  // For those cards we anchor on the inner (more specific) legacy element;
+  // story_message is the exclusive fallback for cards that have no legacy element.
+  // Requires Chrome 105+ for :has() — all supported Chromium builds qualify.
+  var POST_TEXT_SEL = [
+    '[data-ad-preview="message"]',
+    '[data-ad-comet-preview="message"]',
+    '[data-ad-rendering-role="story_message"]' +
+      ':not(:has([data-ad-preview="message"],[data-ad-comet-preview="message"]))',
+  ].join(', ');
 
   // Selector for the post's permalink link. Must cover every Facebook URL
   // pattern the extractor knows how to derive a post_id from.
@@ -45,6 +61,13 @@ window.TLVScroller = (function () {
     'a[href*="/videos/"]',
     'a[href*="/commerce/listing/"]',
     'a[href*="/marketplace/item/"]',
+    // Groups-feed timestamp links use ?multi_permalinks=POST_ID instead of /posts/
+    'a[href*="multi_permalinks="]',
+    // Photo-album links: ?set=pcb.POST_ID — the numeric ID after pcb. IS the parent post ID.
+    // These appear on posts that attached a photo album. Note: /videos/<user>/pcb.<id>/
+    // path-style pcb references (Recommended Reels) are NOT matched here because they
+    // lack the "set=" prefix, so this selector does not re-introduce the Reels pollution.
+    'a[href*="set=pcb."]',
   ].join(', ');
 
   // How many DOM levels above the text element we'll search before giving up.
@@ -52,11 +75,14 @@ window.TLVScroller = (function () {
   // feed wrapper / story-card divs, so we go up to 20.
   var MAX_WALK_UP = 20;
 
-  // Reshared / cross-posted cards sometimes render the post-text element TWICE
-  // within a single card (once in an "inner" preview layer, once in the "outer"
-  // share wrapper). The walk-up must be willing to climb past an ancestor that
-  // contains BOTH copies in order to reach the layer holding the permalink. We
-  // cap at 2 to avoid climbing into a feed-level container with N posts.
+  // Reshared / cross-posted cards nest two real posts: the outer share wrapper
+  // and the inner original post. The walk-up must be willing to climb past an
+  // ancestor containing BOTH so it can reach the layer holding the permalink.
+  // We cap at 2: if an ancestor contains 3+ distinct post-text elements we are
+  // already inside a feed-level container and must stop.
+  // Note: the :not(:has(…)) guard in POST_TEXT_SEL already collapses cards that
+  // render two elements for the SAME post into a single match, so the count
+  // returned by querySelectorAll(POST_TEXT_SEL) reflects distinct posts.
   var MAX_POST_TEXT_PER_CARD = 2;
 
   // ── Core detection ────────────────────────────────────────────────────────
@@ -95,7 +121,17 @@ window.TLVScroller = (function () {
       // we found below this point.
       if (postTextCount > MAX_POST_TEXT_PER_CARD) return lastSingle;
 
-      if (current.querySelector(PERMALINK_LINK_SEL)) return current;
+      // Only accept a permalink-bearing ancestor as the card boundary when it
+      // contains exactly one post-text element. If it contains two, it is a
+      // shared feed-level wrapper spanning two sibling posts — returning it
+      // would cause the second post's text element to map to the same container,
+      // which _seenContainers would then skip entirely. Fall back to lastSingle
+      // (the tightest single-text ancestor) so each post gets its own boundary.
+      // The extractor walks up 20 levels from cardEl independently, so it will
+      // still locate the permalink above this container.
+      if (current.querySelector(PERMALINK_LINK_SEL)) {
+        return postTextCount === 1 ? current : lastSingle;
+      }
       current = current.parentElement;
     }
     return lastSingle;
