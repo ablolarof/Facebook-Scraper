@@ -461,6 +461,38 @@ async function handleCardClick(e) {
     const newLabel = action === 'label-rental' ? 'rental' : 'not_rental';
     // Toggle: clicking the same label again clears it.
     post.human_label = post.human_label === newLabel ? null : newLabel;
+
+    // Auto-manage classification miss:
+    //   • human label disagrees with regex  → ensure 'classification' is in missed_fields
+    //   • human label agrees (or cleared)   → remove 'classification' from missed_fields
+    const regexLabel = regexClassifyPost(post.text || '');
+    if (post.human_label && post.human_label !== regexLabel) {
+      // Disagrees — add classification miss if not already present.
+      const existing   = post.regex_miss || {};
+      const prevFields = existing.missed_fields || [];
+      if (!prevFields.includes('classification')) {
+        post.regex_miss = {
+          ...existing,
+          missed_fields: ['classification', ...prevFields],
+          flagged_at:    existing.flagged_at || new Date().toISOString(),
+          exported_at:   null,
+        };
+      }
+    } else if (post.regex_miss?.missed_fields?.includes('classification')) {
+      // Agrees (or label cleared) — remove classification from miss.
+      const newFields  = post.regex_miss.missed_fields.filter(f => f !== 'classification');
+      const newPhrases = { ...post.regex_miss.key_phrases };
+      delete newPhrases.classification;
+      const isEmpty    = newFields.length === 0 && Object.keys(newPhrases).length === 0
+                         && !post.regex_miss.note;
+      post.regex_miss  = isEmpty ? null : {
+        ...post.regex_miss,
+        missed_fields: newFields,
+        key_phrases:   newPhrases,
+        exported_at:   null,
+      };
+    }
+
     await savePost(post);
     applyFilters();
 
