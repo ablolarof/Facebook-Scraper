@@ -10,29 +10,26 @@
 
 - **One-click scraping** — open any Facebook group or feed, click *Scrape This Feed* in the popup, and the extension auto-scrolls and captures posts. Configurable stop conditions (N consecutive duplicates, or a time limit). A continuation banner lets you push past the stop point for 50 more posts or 5 more minutes.
 - **Local-only classification** — every captured post runs through `lib/regex_extractor.js`, a Hebrew/English regex pass that catches `להשכרה`, `שכירות`, `for rent`, monthly-price patterns, and the inverse (`למכירה`, `for sale`). There is no remote API in the loop. Posts the regex can't classify with confidence stay unlabeled until a human handles them.
-- **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), neighborhood, entry date, whether it's a roommate listing, and whether a broker fee applies.
+- **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), entry date, whether it's a roommate listing, and whether a broker fee applies.
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
 - **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`).
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
-- **Deterministic neighborhood overrides** — a curated list of 40+ Hebrew neighborhood names (sourced from the Tel Aviv municipal GIS, layer 511) matched against post text. Override matches win with `confidence: high`.
-- **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, neighborhood, duplicates visibility.
-- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` and synced to the optional local training server.
-- **Optional Python training server** (`server/`) — a FastAPI/SQLite service at `http://localhost:8765` that mirrors labeled posts into a durable `training.db`, so corrections survive a browser-data clear. Fire-and-forget — the extension never blocks on it.
+- **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
+- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Deduplication** — posts are fingerprinted on save (SHA-256 of normalised text + first image URL). A duplicate inherits the original's classification so we don't redo work on identical content.
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
 - **Permanent delete** — a trash button on each card. Deleted posts come back if Facebook still shows them on a future scrape — there's no permanent blocklist.
 - **Auto-scrape URL parameter** — appending `?tlv_auto_scrape=1` to a Facebook URL starts a 30-minute scrape automatically after a 4-second render delay. Useful for scheduled-task workflows.
-- **Export JSON** — dump every IndexedDB record to a JSON file for backup, external analysis, or bulk-import into the training server.
+- **Export JSON** — dump every IndexedDB record to a JSON file for backup or external analysis.
 
 ---
 
 ## Architecture
 
-Facebook feed → content scripts (`extractor.js` + `scroller.js` + `content.js`) → service worker (`background.js`) → IndexedDB. The service worker also fires labels at an optional local training server at `http://localhost:8765`.
+Facebook feed → content scripts (`extractor.js` + `scroller.js` + `content.js`) → service worker (`background.js`) → IndexedDB.
 
 `background.js` is the only place that:
 - Writes the extension's IndexedDB (content scripts run at `facebook.com` origin and would write Facebook's storage instead)
-- Holds the `host_permissions` for `localhost:8765`
 - Runs `lib/regex_extractor.js` against incoming posts and saves the result
 
 Classification is fully synchronous from the content script's perspective — by the time `SAVE_POST` returns, the post is dedup'd, classified, and saved.
@@ -42,9 +39,8 @@ Classification is fully synchronous from the content script's perspective — by
 ## Prerequisites
 
 - **Chrome** or any Chromium-based browser that supports Manifest V3 (Edge, Arc, Brave).
-- **Python 3.10+** — only if you want the optional training server.
 
-No API keys. No external services.
+No API keys. No external services. No network traffic.
 
 ---
 
@@ -77,8 +73,8 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[id]/dashboard/dashboard.html`).
 
 - **Regex Extract** — runs the local regex extractor on every rental post that hasn't been processed yet. Instant.
-- **Rental / Not rental** buttons — override the AI label. Marking a post as rental triggers regex tag extraction inline.
-- **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` and synced to the training server.
+- **Rental / Not rental** buttons — override the auto-label. Marking a post as rental triggers regex tag extraction inline.
+- **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Show more / Show less** — long card text is line-clamped to 3 lines; click to expand. Expanded state persists across re-renders.
 - **⊘ Dupe** — toggle a post's duplicate flag manually.
 - **🗑 Delete** — permanently remove a post. It will be re-scraped if it still appears on Facebook.
@@ -90,54 +86,12 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 
 ---
 
-## Optional: training server
-
-The `server/` folder contains a small FastAPI service that persists labeled posts into a SQLite database (`training.db`) so they survive browser-data clears or fresh installs. The extension fires labels at it best-effort — if the server is down, corrections are still safe in IndexedDB.
-
-### Running it
-
-On Windows:
-
-```cmd
-cd server
-start.bat
-```
-
-On macOS / Linux:
-
-```bash
-cd server
-pip install -r requirements.txt
-python -m uvicorn server:app --host 127.0.0.1 --port 8765
-```
-
-### Endpoints
-
-| Method | Path           | Purpose                                                                |
-|--------|----------------|------------------------------------------------------------------------|
-| GET    | `/health`      | Liveness check                                                         |
-| GET    | `/stats`       | Label counts + progress toward a 500-post training threshold           |
-| POST   | `/label`       | Save / upsert one labeled post (called automatically by the extension) |
-| POST   | `/import-bulk` | One-time backfill — POST the dashboard's Export JSON file              |
-
-Bulk-import example:
-
-```bash
-curl -X POST http://localhost:8765/import-bulk \
-     -H "Content-Type: application/json" \
-     -d @tlv-rentals-2026-05-24.json
-```
-
-The server binds to `127.0.0.1` only — not reachable from the network.
-
----
-
 ## Project structure
 
 ```
 .
 ├── manifest.json                       # MV3 manifest
-├── background.js                       # Service worker — message router, dedup, regex classify, training-server sync
+├── background.js                       # Service worker — message router, dedup, regex classify
 ├── content/
 │   ├── content.js                      # Orchestrator + popup-message handler + auto-scrape detector
 │   ├── extractor.js                    # DOM → post object
@@ -154,12 +108,7 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 │   ├── db.js                           # IndexedDB wrapper
 │   ├── dedup.js                        # SHA-256 of normalised text + first image URL
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
-│   └── neighborhood_overrides.js       # Hebrew → canonical English neighborhood map
-├── server/
-│   ├── server.py                       # FastAPI training-data sink (SQLite)
-│   ├── requirements.txt
-│   ├── start.bat                       # Windows launcher
-│   └── training.db                     # Created on first run
+
 ├── icons/                              # 16/48/128 PNG icons
 ├── JSONs-(Training)/                   # Dashboard JSON exports
 ├── CLAUDE.md                           # Project guide for Claude Code
@@ -171,38 +120,10 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 
 ## Roadmap
 
-The codebase is in stage 1 of a 5-stage plan:
-
-1. **Drop Gemini entirely — regex-only pipeline.** *(Done as of 2026-05-26.)*
-2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss + record why the correct answer is correct. Corrections feed back into regex rule updates.
-3. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
-4. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
-5. **Fix the group-name capture bug.** Some group names come through truncated.
-
----
-
-## Neighborhood detection
-
-If post text contains a Hebrew neighborhood name from `lib/neighborhood_overrides.js`, the field is filled immediately with `confidence: high`. Otherwise the field stays `null`. The regex does not infer neighborhoods from street names — that capability will return via stage 2 as users teach the system new mappings.
-
-The 14 canonical neighborhoods used in filters and tag pills:
-
-| Canonical name           | Hebrew examples              |
-|--------------------------|------------------------------|
-| Old North                | הצפון הישן                   |
-| New North                | הצפון החדש                   |
-| Bavli                    | בבלי                         |
-| Lev Tel Aviv             | לב תל-אביב, מרכז העיר         |
-| Ganei Sarona             | גני שרונה, שרונה              |
-| Montefiore               | מונטיפיורי                   |
-| Kerem Hateimanim         | כרם התימנים, שוק הכרמל        |
-| Neve Zedek               | נווה צדק                     |
-| Florentine               | פלורנטין                     |
-| Neve Sha'anan            | נווה שאנן                    |
-| South Tel Aviv           | שפירא, התקווה, יד אליהו, …    |
-| North of the Yarkon      | רמת אביב, גלילות              |
-| East of the Ayalon       | —                            |
-| Yafo                     | יפו                          |
+1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
+2. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
+3. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
+4. **Fix the group-name capture bug.** Some group names come through truncated.
 
 ---
 
@@ -216,4 +137,4 @@ See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](ht
 
 ## Disclaimer
 
-This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is fully offline — its only outbound traffic is to your own optional local training server.
+This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is fully offline — no data leaves your machine.
