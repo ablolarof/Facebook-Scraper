@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "TLV Rentals",
+  "version": "0.1.0",
+  "description": "Scrape and track Tel Aviv apartment rental listings from Facebook groups",
+
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "http://localhost:8765/*"
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*"
+      ],
+      "js": [
+        "content/extractor.js",
+        "content/scroller.js",
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

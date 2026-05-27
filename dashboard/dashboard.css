@@ -1,0 +1,504 @@
+/* dashboard/dashboard.css */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: #1c1e21;
+  background: #f0f2f5;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: #1877f2;
+  color: #fff;
+  flex-shrink: 0;
+}
+.topbar .logo { font-size: 16px; font-weight: 700; margin-right: 4px; }
+#result-count { flex: 1; font-size: 13px; opacity: 0.9; }
+.topbar button {
+  padding: 6px 14px;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+.topbar button:hover { background: rgba(255,255,255,0.18); }
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.sidebar {
+  width: 210px;
+  min-width: 210px;
+  background: #fff;
+  padding: 16px 14px;
+  overflow-y: auto;
+  border-right: 1px solid #dde0e4;
+  flex-shrink: 0;
+}
+.sidebar h2 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #1877f2;
+  margin-bottom: 14px;
+}
+.filter-group {
+  margin-bottom: 18px;
+}
+.filter-group h3 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8a8d91;
+  margin-bottom: 7px;
+}
+.filter-group label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 0;
+  user-select: none;
+}
+.filter-group label:hover { color: #1877f2; }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.field-row input[type="number"] {
+  width: 58px;
+  padding: 5px 6px;
+  border: 1px solid #ccd0d5;
+  border-radius: 5px;
+  font-size: 13px;
+}
+.field-row input[type="number"]:focus {
+  outline: none;
+  border-color: #1877f2;
+}
+.field-row span { font-size: 13px; color: #65676b; }
+
+#text-search {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid #ccd0d5;
+  border-radius: 5px;
+  font-size: 13px;
+}
+#text-search:focus { outline: none; border-color: #1877f2; }
+
+#reset-filters-btn {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #ccd0d5;
+  border-radius: 6px;
+  background: #f0f2f5;
+  cursor: pointer;
+  font-size: 13px;
+  color: #606770;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+#reset-filters-btn:hover { background: #e4e6eb; }
+
+/* ── Main area ────────────────────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+/* ── Card grid ────────────────────────────────────────────────────────────── */
+#card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+/* ── Individual card ──────────────────────────────────────────────────────── */
+.card {
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  border-left: 4px solid #ccd0d5;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 3px 8px rgba(0,0,0,0.15); }
+
+/* Left-border colour communicates status at a glance */
+.card.status-new        { border-left-color: #1877f2; }
+.card.status-interested { border-left-color: #00a651; }
+.card.status-seen       { border-left-color: #b0b3b8; }
+.card.status-hidden     { border-left-color: #e41e3f; opacity: 0.55; }
+
+/* Thumbnail */
+.card-img-wrap {
+  height: 150px;
+  overflow: hidden;
+  background: #e4e6eb;
+  flex-shrink: 0;
+}
+.card-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.card-thumb--placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #b0b3b8;
+}
+
+/* Body */
+.card-body {
+  padding: 10px 12px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 18px;
+}
+.card-group {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1877f2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
+}
+.card-time {
+  font-size: 11px;
+  color: #8a8d91;
+  margin-left: auto;
+  text-align: right;
+  line-height: 1.4;
+  /* Allow the two timestamp chips to wrap onto two lines on narrow cards
+     rather than overflow the meta row. */
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 4px;
+}
+.card-time-part {
+  white-space: nowrap;
+}
+
+/* Small indicator tags */
+.tag {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tag--dupe     { background: #fff3cd; color: #7d6608; }
+.tag--filtered { background: #fde8e8; color: #8b1a1a; }
+
+/* Label badges — human label is solid, AI label is outlined to show provenance */
+.tag--rental-human     { background: #00a651; color: #fff; }
+.tag--not-rental-human { background: #e41e3f; color: #fff; }
+.tag--rental-ai        { background: #fff; color: #00a651; border: 1px solid #00a651; }
+.tag--not-rental-ai    { background: #fff; color: #e41e3f; border: 1px solid #e41e3f; }
+.tag--unlabeled        { background: #e4e6eb; color: #65676b; }
+
+/* Post text snippet — unicode-bidi: plaintext makes Hebrew RTL automatically.
+   Default: clamp to 3 lines so cards stay compact.
+   .expanded: remove the clamp to show the full post text. */
+.card-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #1c1e21;
+  unicode-bidi: plaintext;
+  word-break: break-word;
+  white-space: pre-wrap; /* preserve Facebook line-breaks */
+  /* 3-line preview */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-text.expanded {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+
+/* Action buttons row */
+.card-actions {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.btn-action {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 3px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  transition: filter 0.15s;
+}
+.btn-action:hover { filter: brightness(0.92); }
+
+.btn-interested { background: #d4edda; color: #155724; }
+.btn-seen       { background: #e9ecef; color: #495057; }
+.btn-hide       { background: #fde8e8; color: #8b1a1a; }
+.btn-open       { background: #cce5ff; color: #004085; }
+
+/* Rental / Not Rental label buttons — first row of card-actions */
+.btn-rental     { background: #d4edda; color: #155724; }
+.btn-not-rental { background: #fde8e8; color: #8b1a1a; }
+.btn-rental.active     { background: #00a651; color: #fff; }
+.btn-not-rental.active { background: #e41e3f; color: #fff; }
+
+/* Two-row action layout — split labels from status/open buttons */
+.card-actions-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.card-actions-row + .card-actions-row { margin-top: 4px; }
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+#empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 80px 20px;
+  color: #8a8d91;
+  font-size: 14px;
+}
+
+/* ── Detail pills (extracted tags on rental cards) ───────────────────────── */
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+.detail-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e7f3ff;
+  color: #1877f2;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.detail-pill--roommates  { background: #fff3e0; color: #e65100; }
+.detail-pill--broker           { background: #fde8e8; color: #8b1a1a; }
+.detail-pill--no-broker        { background: #d4edda; color: #155724; }
+.detail-pill--corrected        { background: #d4edda; color: #155724; }
+/* Neighborhood — low confidence gets a dashed border + reduced opacity */
+.detail-pill--neighborhood-low { background: #e7f3ff; color: #1877f2;
+                                  border: 1px dashed #1877f2; opacity: 0.7; }
+/* Unknown neighborhood (tags extracted but neighborhood came back null) */
+.detail-pill--unknown          { background: #e4e6eb; color: #8a8d91; }
+
+/* "Show more / Show less" expander — sibling of .card-text, not nested inside
+   it, so no parent style or RTL bidi can ever hide or shift it. Full-width
+   pill that visually anchors as a separate, obviously-interactive control. */
+.btn-see-more {
+  display: block !important;
+  width: 100%;
+  margin: 6px 0 2px 0;
+  background: #1877f2 !important;
+  border: none !important;
+  border-radius: 6px;
+  padding: 6px 10px !important;
+  cursor: pointer !important;
+  color: #ffffff !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  font-family: inherit !important;
+  line-height: 1.4;
+  text-align: center;
+  direction: ltr;
+  letter-spacing: 0.02em;
+}
+.btn-see-more:hover { background: #1565c0 !important; }
+
+/* Dupe button — amber when inactive (click to mark), darker amber when active */
+.btn-dupe        { background: #fff3cd; color: #7d6608; }
+.btn-dupe.active { background: #ffc107; color: #5a4600; font-weight: 900; }
+.btn-dupe:hover  { filter: brightness(0.92); }
+
+/* Delete button — distinct red so it's clearly a destructive action. */
+.btn-delete {
+  background: #fde8e8 !important;
+  color: #8b1a1a !important;
+  font-weight: 700;
+}
+.btn-delete:hover { background: #f5c6cb !important; }
+
+/* Edit-tags pencil button (sits beside the pills) */
+.btn-edit-tags {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: #8a8d91;
+  line-height: 1;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.btn-edit-tags:hover { background: #e4e6eb; color: #1877f2; }
+
+/* ── Inline tag editor ────────────────────────────────────────────────────── */
+.card-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  background: #f7f8fa;
+  border-radius: 6px;
+  border: 1px solid #dde0e4;
+}
+.tag-editor-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tag-editor-row label {
+  display: flex;
+  flex-direction: column;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a8d91;
+  gap: 3px;
+}
+.tag-editor-row input[type="number"],
+.tag-editor-row input[type="text"] {
+  width: 70px;
+  padding: 4px 5px;
+  border: 1px solid #ccd0d5;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1c1e21;
+}
+.tag-editor-wide { flex: 1; }
+.tag-editor-wide input { width: 100%; }
+.tag-editor-row select {
+  padding: 4px 5px;
+  border: 1px solid #ccd0d5;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1c1e21;
+  background: #fff;
+}
+.tag-editor-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.btn-tag-save, .btn-tag-cancel {
+  flex: 1;
+  padding: 5px;
+  border-radius: 5px;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+.btn-tag-save   { background: #1877f2; color: #fff; }
+.btn-tag-save:hover { background: #1565c0; }
+.btn-tag-cancel { background: #e4e6eb; color: #606770; }
+.btn-tag-cancel:hover { background: #ccd0d5; }
+
+/* ── Sidebar select (Sort by) ─────────────────────────────────────────────── */
+.sidebar select {
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid #ccd0d5;
+  border-radius: 5px;
+  font-size: 13px;
+  background: #fff;
+  cursor: pointer;
+  color: #1c1e21;
+}
+.sidebar select:focus { outline: none; border-color: #1877f2; }
+
+/* Wider number inputs for price/rooms range pairs */
+.field-row input[type="number"] {
+  width: 70px;
+}
+
+/* Entry date range row */
+.date-range-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.date-range-row input[type="date"] {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 4px;
+  border: 1px solid #ccd0d5;
+  border-radius: 5px;
+  font-size: 11px;
+  color: #1c1e21;
+}
+.date-range-row input[type="date"]:focus {
+  outline: none;
+  border-color: #1877f2;
+}
+.date-range-row span { font-size: 13px; color: #65676b; }
+
+
+/* ── Utility ──────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TLV Rentals Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <span class="logo">🏠 TLV Rentals</span>
+    <span id="result-count">Loading…</span>
+    <button id="refresh-btn">↺ Refresh</button>
+    <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
+    <button id="export-btn">Export JSON</button>
+  </header>
+
+  <div class="layout">
+
+    <!-- ── Sidebar ── -->
+    <aside class="sidebar">
+      <h2>Filters</h2>
+
+      <div class="filter-group">
+        <h3>Sort by</h3>
+        <select id="sort-by">
+          <option value="newest-scraped">Scraped: newest first</option>
+          <option value="oldest-scraped">Scraped: oldest first</option>
+          <option value="newest-posted">Posted: newest first</option>
+          <option value="oldest-posted">Posted: oldest first</option>
+          <option value="price-asc">Price ↑</option>
+          <option value="price-desc">Price ↓</option>
+          <option value="rooms-asc">Rooms ↑</option>
+          <option value="rooms-desc">Rooms ↓</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <h3>Status</h3>
+        <label><input type="checkbox" name="status" value="new" checked> New</label>
+        <label><input type="checkbox" name="status" value="interested" checked> Interested</label>
+        <label><input type="checkbox" name="status" value="seen"> Seen</label>
+        <label><input type="checkbox" name="status" value="hidden"> Hidden</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Posted within</h3>
+        <div class="field-row">
+          <input type="number" id="posted-days-filter" value="30" min="1" max="365" title="Filter by when the post appeared on Facebook. Leave blank for no filter.">
+          <span>days</span>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Scraped within</h3>
+        <div class="field-row">
+          <input type="number" id="scraped-days-filter" value="" min="1" max="365" placeholder="any" title="Filter by when this scraper saved the post. Leave blank for no filter.">
+          <span>days</span>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Search</h3>
+        <input type="search" id="text-search" placeholder="Search post text…">
+      </div>
+
+      <div class="filter-group">
+        <h3>Label</h3>
+        <label><input type="checkbox" name="label" value="rental"     checked> Rental</label>
+        <label><input type="checkbox" name="label" value="not_rental"        > Not rental</label>
+        <label><input type="checkbox" name="label" value="unlabeled"  checked> Unlabeled</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Label source</h3>
+        <label><input type="checkbox" name="label-source" value="human" checked> Human-labeled</label>
+        <label><input type="checkbox" name="label-source" value="ai"    checked> AI-labeled</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Show</h3>
+        <label class="toggle-label">
+          <input type="checkbox" id="show-dupes"> Duplicates
+        </label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Price (₪/mo)</h3>
+        <div class="field-row">
+          <input type="number" id="price-min" placeholder="Min" min="0" step="100">
+          <span>–</span>
+          <input type="number" id="price-max" placeholder="Max" min="0" step="100">
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Rooms</h3>
+        <div class="field-row">
+          <input type="number" id="rooms-min" placeholder="Min" min="0" step="0.5">
+          <span>–</span>
+          <input type="number" id="rooms-max" placeholder="Max" min="0" step="0.5">
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <h3>Roommates</h3>
+        <label><input type="checkbox" name="roommates-filter" value="yes"> Seeking roommate</label>
+        <label><input type="checkbox" name="roommates-filter" value="no"> Whole apartment</label>
+        <label><input type="checkbox" name="roommates-filter" value="unknown"> Unknown</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Broker fee</h3>
+        <label><input type="checkbox" name="broker-filter" value="yes"> Has broker fee</label>
+        <label><input type="checkbox" name="broker-filter" value="no"> No broker fee</label>
+        <label><input type="checkbox" name="broker-filter" value="unknown"> Unknown</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Entry date</h3>
+        <div class="date-range-row">
+          <input type="date" id="entry-date-from" title="From date">
+          <span>–</span>
+          <input type="date" id="entry-date-to" title="To date">
+        </div>
+        <label><input type="checkbox" id="entry-date-unknown" checked> Include unknown</label>
+        <label><input type="checkbox" id="entry-date-immediate" checked> Include immediate</label>
+      </div>
+
+      <div class="filter-group">
+        <h3>Neighborhood</h3>
+        <!-- Populated dynamically by dashboard.js from distinct values in IndexedDB -->
+        <div id="neighborhood-filters"><em style="font-size:11px;color:#aaa">No tagged posts yet</em></div>
+      </div>
+
+      <button id="reset-filters-btn">Reset Filters</button>
+    </aside>
+
+    <!-- ── Main card area ── -->
+    <main class="main">
+      <div id="card-grid">
+        <!-- Cards injected by dashboard.js -->
+      </div>
+      <div id="empty-state" class="hidden">
+        No posts match the current filters.
+      </div>
+    </main>
+
+  </div>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
