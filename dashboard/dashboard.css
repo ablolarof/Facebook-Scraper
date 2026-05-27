@@ -38,6 +38,8 @@ body {
   transition: background 0.15s;
 }
 .topbar button:hover { background: rgba(255,255,255,0.18); }
+.topbar button.btn-danger { border-color: rgba(255,120,120,0.8); background: rgba(160,20,20,0.55); }
+.topbar button.btn-danger:hover { background: rgba(200,30,30,0.85); }
 
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 .layout {

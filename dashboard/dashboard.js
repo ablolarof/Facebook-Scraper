@@ -14,6 +14,7 @@ import {
   exportAllJSON,
   savePost,
   deletePost,
+  clearAllPosts,
 } from '../lib/db.js';
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
@@ -380,6 +381,7 @@ function bindControls() {
   el('export-misses-btn').addEventListener('click', exportMisses);
   el('retest-regex-btn').addEventListener('click', retestRegex);
   el('regex-extract-btn').addEventListener('click', regexExtractAll);
+  el('delete-all-btn').addEventListener('click', deleteAllPosts);
 
   // Event delegation for card buttons.
   el('card-grid').addEventListener('click', handleCardClick);
@@ -718,6 +720,29 @@ function resetFilters() {
   el('show-dupes').checked = false;
   el('show-only-misses').checked = false;
   applyFilters();
+}
+
+async function deleteAllPosts() {
+  const count = allPosts.length;
+  const noun  = count === 1 ? '1 post' : `${count} posts`;
+  if (!count) {
+    alert('The database is already empty — nothing to delete.');
+    return;
+  }
+  const confirmed = window.confirm(
+    `Delete all ${noun}?\n\nThis cannot be undone, but you can re-scrape to collect them again.`
+  );
+  if (!confirmed) return;
+
+  const btn = el('delete-all-btn');
+  btn.disabled = true;
+  try {
+    await clearAllPosts();
+    await loadPosts();
+    applyFilters();
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function exportJSON() {
