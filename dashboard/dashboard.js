@@ -970,6 +970,31 @@ async function exportMisses() {
 // Shows a confirmation modal before writing anything. Human labels and manual
 // tag corrections (tags_human_override) are never overwritten.
 
+/**
+ * Returns true if the current regex now produces the correct output for every
+ * field that the human flagged as a miss.
+ *
+ * Checks each entry in post.regex_miss.missed_fields:
+ *   'classification' → regexClassifyPost() must equal post.human_label
+ *   everything else  → regexExtractTags()[field] must equal
+ *                      (tags_human_override || tags || {})[field]
+ */
+function isMissResolved(post) {
+  const miss = post.regex_miss;
+  if (!miss?.missed_fields?.length) return false;
+
+  const text    = post.text || '';
+  const newTags = regexExtractTags(text) || {};
+  const human   = post.tags_human_override || post.tags || {};
+
+  return miss.missed_fields.every(field => {
+    if (field === 'classification') {
+      return regexClassifyPost(text) === (post.human_label || null);
+    }
+    return (newTags[field] ?? null) === (human[field] ?? null);
+  });
+}
+
 async function retestRegex() {
   const diff = {
     resolved:        [],  // had regex_miss whose correct_label now matches new regex
@@ -981,11 +1006,10 @@ async function retestRegex() {
   for (const post of allPosts) {
     const newLabel = regexClassifyPost(post.text || '');
 
-    // Resolve miss: new regex agrees with what the human said was correct.
-    if (post.regex_miss?.correct_label && !post.human_label) {
-      if (newLabel === post.regex_miss.correct_label) {
-        diff.resolved.push(post);
-      }
+    // Resolve miss: new regex now produces the correct output for all missed fields.
+    if (post.regex_miss && isMissResolved(post)) {
+      diff.resolved.push(post);
+      continue; // don't also count as reclassified / newly-tagged
     }
 
     // Newly classified (unlabeled post, regex now returns something).
