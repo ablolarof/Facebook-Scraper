@@ -6,8 +6,7 @@
 
   "permissions": ["storage", "tabs"],
   "host_permissions": [
-    "https://www.facebook.com/*",
-    "http://localhost:8765/*"
+    "https://www.facebook.com/*"
   ],
 
   "action": {

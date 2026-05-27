@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **TLV Rentals** is a Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental posts from Facebook feeds and classifies them with a local regex pipeline. Posts are stored in IndexedDB and presented through a filterable dashboard.
 
-The extension is fully offline. The only outbound traffic is to an optional local training server at `http://localhost:8765` that mirrors human corrections into a SQLite database. If that server is not running, every fetch fails silently and nothing breaks.
+The extension is fully offline. No data leaves your machine.
 
 ## How to work with the user
 
@@ -33,20 +33,20 @@ These stages are sequential.
 
 ### Data flow
 
-Facebook feed → content scripts → service worker → IndexedDB → dashboard. Service worker also fires labels to optional `localhost:8765` training server.
+Facebook feed → content scripts → service worker → IndexedDB → dashboard.
 
 ### Why this architecture?
 
-- **Content scripts** (facebook.com origin) can see the Facebook DOM but cannot directly access the extension's IndexedDB or reach `localhost:8765`. They extract posts and send them to the service worker via `chrome.runtime.sendMessage`.
-- **Service worker** (extension origin) handles all storage (IndexedDB) and outbound network (training server). It has the `host_permissions` required to reach `localhost:8765`.
-- **Dashboard** shares the extension origin with the service worker, so it has direct IndexedDB access. Writes for label corrections go through the service worker's `SYNC_LABEL` handler.
+- **Content scripts** (facebook.com origin) can see the Facebook DOM but cannot directly access the extension's IndexedDB. They extract posts and send them to the service worker via `chrome.runtime.sendMessage`.
+- **Service worker** (extension origin) handles all storage (IndexedDB). It always runs at the extension origin, so its IndexedDB is shared with the dashboard.
+- **Dashboard** shares the extension origin with the service worker, so it has direct IndexedDB access.
 
 ### Key components
 
 | File | Role |
 |------|------|
 | **manifest.json** | Declares permissions, content scripts, service worker, popup, dashboard. |
-| **background.js** | Service worker — message router, deduplication, regex classification orchestrator, training-server sync. |
+| **background.js** | Service worker — message router, deduplication, regex classification orchestrator. |
 | **content/extractor.js** | Extracts post data from Facebook DOM. |
 | **content/scroller.js** | Auto-scrolls feed, clicks "See more" buttons. |
 | **content/content.js** | Main content script — orchestrates scraper state machine. |
@@ -55,8 +55,6 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/db.js** | IndexedDB wrapper. |
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
-
-| **server/server.py** | Optional FastAPI/SQLite training-data sink. |
 
 ## Common development tasks
 
@@ -70,7 +68,7 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 
 1. Open `chrome-extension://[extension-id]/dashboard/dashboard.html` or click Open Dashboard in the popup
 2. Click Regex Extract to backfill tags on rental posts that have not been regex-processed
-3. Click the pencil button on a card to edit tags — corrections sync to the training server
+3. Click the pencil button on a card to edit tags — corrections are stored in IndexedDB
 
 ## Key concepts & gotchas
 
@@ -91,7 +89,6 @@ Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classi
 ### Async patterns
 
 - **SAVE_POST** → regex classify + tag extract inline (no network) → save → respond.
-- **SYNC_LABEL** → fire-and-forget POST to training server; always responds `{ ok: true }` even if server is down.
 
 ### Content script origins
 
@@ -116,9 +113,8 @@ Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classi
 ### Dashboard ↔ service worker
 
 - `OPEN_DASHBOARD` → `{ ok }`
-- `SYNC_LABEL { post }` → `{ ok }`
 
-`CLASSIFY_POST` and `EXTRACT_TAGS` were removed when Gemini was dropped. Classification is fully local now.
+`CLASSIFY_POST`, `EXTRACT_TAGS`, and `SYNC_LABEL` were removed (Gemini and training server are gone). Classification is fully local now.
 
 ## File write & verification
 

@@ -271,7 +271,7 @@ function cardHTML(post) {
   // Detail pills from extracted tags + ✏ edit button.
   // The ✏ button appears on all rental posts so the user can add/correct tags
   // even before regex has extracted them. Corrections are stored as
-  // tags_human_override for the training server and stage-2 feedback loop.
+  // tags_human_override and feed into the stage-2 feedback loop.
   const isRental = post.human_label === 'rental' || post.ai_label === 'rental';
   let tagsRow = '';
   if (isRental) {
@@ -472,10 +472,6 @@ async function handleCardClick(e) {
 
     await savePost(post);
     applyFilters();
-
-    // Sync the new label to the local training server (fire-and-forget).
-    // Fails silently if the server isn't running — data is safe in IndexedDB.
-    chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 
     // When manually marking as rental, run regex extraction immediately.
     // No API fallback — if regex finds nothing, tags stay null until the
@@ -695,7 +691,6 @@ async function saveTagEdits(post, cardEl) {
 
   await savePost(post);
   applyFilters();
-  chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 }
 
 function resetFilters() {

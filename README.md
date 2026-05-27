@@ -15,23 +15,21 @@
 - **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`).
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
 - **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
-- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` and synced to the optional local training server.
-- **Optional Python training server** (`server/`) — a FastAPI/SQLite service at `http://localhost:8765` that mirrors labeled posts into a durable `training.db`, so corrections survive a browser-data clear. Fire-and-forget — the extension never blocks on it.
+- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Deduplication** — posts are fingerprinted on save (SHA-256 of normalised text + first image URL). A duplicate inherits the original's classification so we don't redo work on identical content.
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
 - **Permanent delete** — a trash button on each card. Deleted posts come back if Facebook still shows them on a future scrape — there's no permanent blocklist.
 - **Auto-scrape URL parameter** — appending `?tlv_auto_scrape=1` to a Facebook URL starts a 30-minute scrape automatically after a 4-second render delay. Useful for scheduled-task workflows.
-- **Export JSON** — dump every IndexedDB record to a JSON file for backup, external analysis, or bulk-import into the training server.
+- **Export JSON** — dump every IndexedDB record to a JSON file for backup or external analysis.
 
 ---
 
 ## Architecture
 
-Facebook feed → content scripts (`extractor.js` + `scroller.js` + `content.js`) → service worker (`background.js`) → IndexedDB. The service worker also fires labels at an optional local training server at `http://localhost:8765`.
+Facebook feed → content scripts (`extractor.js` + `scroller.js` + `content.js`) → service worker (`background.js`) → IndexedDB.
 
 `background.js` is the only place that:
 - Writes the extension's IndexedDB (content scripts run at `facebook.com` origin and would write Facebook's storage instead)
-- Holds the `host_permissions` for `localhost:8765`
 - Runs `lib/regex_extractor.js` against incoming posts and saves the result
 
 Classification is fully synchronous from the content script's perspective — by the time `SAVE_POST` returns, the post is dedup'd, classified, and saved.
@@ -41,9 +39,8 @@ Classification is fully synchronous from the content script's perspective — by
 ## Prerequisites
 
 - **Chrome** or any Chromium-based browser that supports Manifest V3 (Edge, Arc, Brave).
-- **Python 3.10+** — only if you want the optional training server.
 
-No API keys. No external services.
+No API keys. No external services. No network traffic.
 
 ---
 
@@ -77,7 +74,7 @@ Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[i
 
 - **Regex Extract** — runs the local regex extractor on every rental post that hasn't been processed yet. Instant.
 - **Rental / Not rental** buttons — override the auto-label. Marking a post as rental triggers regex tag extraction inline.
-- **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` and synced to the training server.
+- **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Show more / Show less** — long card text is line-clamped to 3 lines; click to expand. Expanded state persists across re-renders.
 - **⊘ Dupe** — toggle a post's duplicate flag manually.
 - **🗑 Delete** — permanently remove a post. It will be re-scraped if it still appears on Facebook.
@@ -89,54 +86,12 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 
 ---
 
-## Optional: training server
-
-The `server/` folder contains a small FastAPI service that persists labeled posts into a SQLite database (`training.db`) so they survive browser-data clears or fresh installs. The extension fires labels at it best-effort — if the server is down, corrections are still safe in IndexedDB.
-
-### Running it
-
-On Windows:
-
-```cmd
-cd server
-start.bat
-```
-
-On macOS / Linux:
-
-```bash
-cd server
-pip install -r requirements.txt
-python -m uvicorn server:app --host 127.0.0.1 --port 8765
-```
-
-### Endpoints
-
-| Method | Path           | Purpose                                                                |
-|--------|----------------|------------------------------------------------------------------------|
-| GET    | `/health`      | Liveness check                                                         |
-| GET    | `/stats`       | Label counts + progress toward a 500-post training threshold           |
-| POST   | `/label`       | Save / upsert one labeled post (called automatically by the extension) |
-| POST   | `/import-bulk` | One-time backfill — POST the dashboard's Export JSON file              |
-
-Bulk-import example:
-
-```bash
-curl -X POST http://localhost:8765/import-bulk \
-     -H "Content-Type: application/json" \
-     -d @tlv-rentals-2026-05-24.json
-```
-
-The server binds to `127.0.0.1` only — not reachable from the network.
-
----
-
 ## Project structure
 
 ```
 .
 ├── manifest.json                       # MV3 manifest
-├── background.js                       # Service worker — message router, dedup, regex classify, training-server sync
+├── background.js                       # Service worker — message router, dedup, regex classify
 ├── content/
 │   ├── content.js                      # Orchestrator + popup-message handler + auto-scrape detector
 │   ├── extractor.js                    # DOM → post object
@@ -154,11 +109,6 @@ The server binds to `127.0.0.1` only — not reachable from the network.
 │   ├── dedup.js                        # SHA-256 of normalised text + first image URL
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 
-├── server/
-│   ├── server.py                       # FastAPI training-data sink (SQLite)
-│   ├── requirements.txt
-│   ├── start.bat                       # Windows launcher
-│   └── training.db                     # Created on first run
 ├── icons/                              # 16/48/128 PNG icons
 ├── JSONs-(Training)/                   # Dashboard JSON exports
 ├── CLAUDE.md                           # Project guide for Claude Code
@@ -187,4 +137,4 @@ See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](ht
 
 ## Disclaimer
 
-This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is fully offline — its only outbound traffic is to your own optional local training server.
+This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is fully offline — no data leaves your machine.
