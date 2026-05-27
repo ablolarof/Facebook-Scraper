@@ -345,7 +345,6 @@ function cardHTML(post) {
     </div>
     <div class="card-actions-row">
       <button class="btn-action btn-dupe${post.is_duplicate ? ' active' : ''}" data-action="toggle-dupe" data-id="${id}" title="Mark as duplicate — hidden from the default view unless 'Duplicates' is checked in the sidebar">⊘ Dupe</button>
-      <button class="btn-action btn-flag${post.regex_miss ? ' active' : ''}" data-action="flag-post" data-id="${id}" title="Flag as regex miss — record what the regex got wrong and why">⚑ Flag</button>
       <button class="btn-action btn-delete" data-action="delete" data-id="${id}" title="Permanently remove this post. It will be re-scraped if it still appears on Facebook.">🗑 Delete</button>
     </div>
   </div>
@@ -491,21 +490,6 @@ async function handleCardClick(e) {
     return;
   }
 
-  if (action === 'flag-post') {
-    openFlagEditor(post, btn.closest('.card'));
-    return;
-  }
-
-  if (action === 'save-flag') {
-    await saveFlagEdits(post, btn.closest('.card'));
-    return;
-  }
-
-  if (action === 'cancel-flag') {
-    applyFilters();
-    return;
-  }
-
   if (action === 'clear-flag') {
     post.regex_miss = null;
     await savePost(post);
@@ -519,70 +503,115 @@ async function handleCardClick(e) {
   applyFilters();
 }
 
-// Replace the .card-tags pill row with an inline edit form.
-// Values are seeded from tags_human_override (if a previous correction exists)
-// or from the AI-extracted tags.
+// Replace the .card-tags pill row with an inline correction form.
+//
+// Each field is shown as a row: [label] [value input] [key phrase input].
+// The key phrase is the text from the post that led the user to that value —
+// it becomes the training signal in the export prompt.
+//
+// On save, any field whose value differs from what's currently stored is
+// automatically detected as a regex miss. Saving with no changes and no
+// key phrases is a no-op for regex_miss (Cancel to discard).
 function openTagEditor(post, cardEl) {
   const tagsDiv = cardEl.querySelector('.card-tags');
   if (!tagsDiv) return;
-  const t   = post.tags_human_override || post.tags || {};
-  const id  = esc(post.post_id);
 
-  const rmVal     = t.roommates === true  ? 'true'  : t.roommates === false  ? 'false' : '';
-  const brokerVal = t.broker    === true  ? 'true'  : t.broker    === false  ? 'false' : '';
-  const labelVal  = post.human_label || '';
+  const t   = post.tags_human_override || post.tags || {};
+  const kp  = post.regex_miss?.key_phrases || {};
+  const id  = esc(post.post_id);
+  const lv  = post.human_label || '';
+  const rmv = t.roommates === true ? 'true' : t.roommates === false ? 'false' : '';
+  const brv = t.broker    === true ? 'true' : t.broker    === false ? 'false' : '';
 
   tagsDiv.outerHTML = `
 <div class="card-tag-editor">
-  <div class="tag-editor-row">
-    <label>Classification
-      <select name="tag-label">
-        <option value=""           ${labelVal === ''           ? 'selected' : ''}>— keep current —</option>
-        <option value="rental"     ${labelVal === 'rental'     ? 'selected' : ''}>✓ Rental</option>
-        <option value="not_rental" ${labelVal === 'not_rental' ? 'selected' : ''}>✗ Not rental</option>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Classification</span>
+    <div class="tag-field-inputs">
+      <select name="tag-label" class="tag-field-value">
+        <option value=""           ${lv === ''           ? 'selected' : ''}>— keep current —</option>
+        <option value="rental"     ${lv === 'rental'     ? 'selected' : ''}>✓ Rental</option>
+        <option value="not_rental" ${lv === 'not_rental' ? 'selected' : ''}>✗ Not rental</option>
       </select>
-    </label>
+      <input type="text" name="kp-classification" class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.classification || '')}">
+    </div>
   </div>
-  <div class="tag-editor-row">
-    <label>₪/mo<input type="number" name="tag-price"     value="${t.price        ?? ''}" min="0" step="100"></label>
-    <label>Rooms<input type="number" name="tag-rooms"     value="${t.rooms        ?? ''}" min="0" step="0.5"></label>
-    <label>m²<input   type="number" name="tag-size"      value="${t.size         ?? ''}" min="0"></label>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Price ₪/mo</span>
+    <div class="tag-field-inputs">
+      <input type="number" name="tag-price" class="tag-field-value" value="${t.price ?? ''}" min="0" step="100">
+      <input type="text"   name="kp-price"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.price || '')}">
+    </div>
   </div>
-  <div class="tag-editor-row">
-    <label class="tag-editor-wide">Neighborhood
-      <input type="text" name="tag-neighborhood" value="${esc(t.neighborhood || '')}">
-    </label>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Rooms</span>
+    <div class="tag-field-inputs">
+      <input type="number" name="tag-rooms" class="tag-field-value" value="${t.rooms ?? ''}" min="0" step="0.5">
+      <input type="text"   name="kp-rooms"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.rooms || '')}">
+    </div>
   </div>
-  <div class="tag-editor-row">
-    <label class="tag-editor-wide">Entry date (YYYY-MM-DD or "immediate")
-      <input type="text" name="tag-entry-date" value="${esc(t.entry_date || '')}">
-    </label>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Size m²</span>
+    <div class="tag-field-inputs">
+      <input type="number" name="tag-size" class="tag-field-value" value="${t.size ?? ''}" min="0">
+      <input type="text"   name="kp-size"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.size || '')}">
+    </div>
   </div>
-  <div class="tag-editor-row">
-    <label>Roommates
-      <select name="tag-roommates">
-        <option value=""      ${rmVal === ''      ? 'selected' : ''}>Unknown</option>
-        <option value="true"  ${rmVal === 'true'  ? 'selected' : ''}>Yes — seeking roommate</option>
-        <option value="false" ${rmVal === 'false' ? 'selected' : ''}>No — whole apartment</option>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Neighborhood</span>
+    <div class="tag-field-inputs">
+      <input type="text" name="tag-neighborhood" class="tag-field-value tag-field-value--text" value="${esc(t.neighborhood || '')}">
+      <input type="text" name="kp-neighborhood"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.neighborhood || '')}">
+    </div>
+  </div>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Entry date</span>
+    <div class="tag-field-inputs">
+      <input type="text" name="tag-entry-date" class="tag-field-value tag-field-value--text" value="${esc(t.entry_date || '')}" placeholder="YYYY-MM-DD or immediate">
+      <input type="text" name="kp-entry-date"  class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.entry_date || '')}">
+    </div>
+  </div>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Roommates</span>
+    <div class="tag-field-inputs">
+      <select name="tag-roommates" class="tag-field-value">
+        <option value=""      ${rmv === ''      ? 'selected' : ''}>Unknown</option>
+        <option value="true"  ${rmv === 'true'  ? 'selected' : ''}>Yes — seeking roommate</option>
+        <option value="false" ${rmv === 'false' ? 'selected' : ''}>No — whole apartment</option>
       </select>
-    </label>
-    <label>Broker fee
-      <select name="tag-broker">
-        <option value=""      ${brokerVal === ''      ? 'selected' : ''}>Unknown</option>
-        <option value="true"  ${brokerVal === 'true'  ? 'selected' : ''}>Yes — דמי תיווך</option>
-        <option value="false" ${brokerVal === 'false' ? 'selected' : ''}>No — ללא תיווך</option>
+      <input type="text" name="kp-roommates" class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.roommates || '')}">
+    </div>
+  </div>
+  <div class="tag-field-row">
+    <span class="tag-field-label">Broker fee</span>
+    <div class="tag-field-inputs">
+      <select name="tag-broker" class="tag-field-value">
+        <option value=""      ${brv === ''      ? 'selected' : ''}>Unknown</option>
+        <option value="true"  ${brv === 'true'  ? 'selected' : ''}>Yes — דמי תיווך</option>
+        <option value="false" ${brv === 'false' ? 'selected' : ''}>No — ללא תיווך</option>
       </select>
+      <input type="text" name="kp-broker" class="tag-field-keyphrase" placeholder="key phrase…" value="${esc(kp.broker || '')}">
+    </div>
+  </div>
+  <div class="tag-field-row">
+    <label class="tag-editor-wide">Note (optional)
+      <input type="text" name="tag-note" value="${esc(post.regex_miss?.note || '')}" placeholder="any extra context for Claude">
     </label>
   </div>
   <div class="tag-editor-actions">
-    <button class="btn-tag-save"   data-action="save-tags"   data-id="${id}">Save correction</button>
+    <button class="btn-tag-save"   data-action="save-tags"   data-id="${id}">Save corrections</button>
     <button class="btn-tag-cancel" data-action="cancel-tags" data-id="${id}">Cancel</button>
+    ${post.regex_miss ? `<button class="btn-clear-miss" data-action="clear-flag" data-id="${id}">✕ Clear miss</button>` : ''}
   </div>
 </div>`;
 }
 
-// Read the editor inputs from the card, persist as tags_human_override,
-// and update tags so the pills re-render with the corrected values.
+// Persist tag corrections and auto-build regex_miss from the diff.
+//
+// Any field whose new value differs from what was stored is added to
+// missed_fields. Key phrases entered for any field (even unchanged ones)
+// are stored as evidence. If anything changed or any key phrase was entered,
+// regex_miss is created/updated and the ⚑ Miss badge appears on the card.
 async function saveTagEdits(post, cardEl) {
   const editor = cardEl.querySelector('.card-tag-editor');
   if (!editor) return;
@@ -595,11 +624,15 @@ async function saveTagEdits(post, cardEl) {
     const v = (editor.querySelector(`[name="${name}"]`)?.value || '').trim();
     return v || null;
   };
-  const rmRaw     = editor.querySelector('[name="tag-roommates"]')?.value;
-  const roommates = rmRaw === 'true' ? true : rmRaw === 'false' ? false : null;
+  const kpVal = name =>
+    (editor.querySelector(`[name="kp-${name}"]`)?.value || '').trim() || null;
 
-  const brokerRaw = editor.querySelector('[name="tag-broker"]')?.value;
-  const broker    = brokerRaw === 'true' ? true : brokerRaw === 'false' ? false : null;
+  const rmRaw  = editor.querySelector('[name="tag-roommates"]')?.value;
+  const brRaw  = editor.querySelector('[name="tag-broker"]')?.value;
+  const roommates = rmRaw === 'true' ? true : rmRaw === 'false' ? false : null;
+  const broker    = brRaw === 'true' ? true : brRaw === 'false' ? false : null;
+  const labelVal  = editor.querySelector('[name="tag-label"]')?.value;
+  const noteVal   = str('tag-note');
 
   const corrected = {
     price:        num('tag-price'),
@@ -611,21 +644,57 @@ async function saveTagEdits(post, cardEl) {
     broker,
   };
 
-  // Update classification label if the user changed it (trains future classifications).
-  const labelVal = editor.querySelector('[name="tag-label"]')?.value;
+  // Baseline: what was shown in the editor when it opened.
+  const prev      = post.tags_human_override || post.tags || {};
+  const prevLabel = post.human_label || '';
+
+  // Detect changed fields and collect key phrases.
+  const missedFields = [];
+  const keyPhrases   = {};
+
+  if (labelVal && labelVal !== prevLabel) missedFields.push('classification');
+  const classKp = kpVal('classification');
+  if (classKp) keyPhrases.classification = classKp;
+
+  // [ field_id, input_name, kp_name ]
+  const FIELDS = [
+    ['price',        'tag-price',        'price'],
+    ['rooms',        'tag-rooms',        'rooms'],
+    ['size',         'tag-size',         'size'],
+    ['neighborhood', 'tag-neighborhood', 'neighborhood'],
+    ['entry_date',   'tag-entry-date',   'entry-date'],
+    ['roommates',    'tag-roommates',    'roommates'],
+    ['broker',       'tag-broker',       'broker'],
+  ];
+  for (const [fid, , kpName] of FIELDS) {
+    if (corrected[fid] !== (prev[fid] ?? null)) missedFields.push(fid);
+    const phrase = kpVal(kpName);
+    if (phrase) keyPhrases[fid] = phrase;
+  }
+
+  // Update classification label.
   if (labelVal === 'rental' || labelVal === 'not_rental') {
     post.human_label = labelVal;
   }
 
-  // Store both: tags (used for display/filters) and tags_human_override
-  // (the persistent training-data signal — synced to the local training
-  // server and consumed by stage 2's regex-rule feedback loop).
+  // Persist corrections.
   post.tags                = corrected;
   post.tags_human_override = corrected;
-  await savePost(post);
-  applyFilters(); // re-render cards to show updated pills + "Corrected" badge
 
-  // Sync the corrected tags + label to the local training server (fire-and-forget).
+  // Auto-set regex_miss if anything changed or any key phrase was given.
+  const hasMiss = missedFields.length > 0 || Object.keys(keyPhrases).length > 0;
+  if (hasMiss) {
+    post.regex_miss = {
+      missed_fields: missedFields,
+      key_phrases:   keyPhrases,
+      note:          noteVal,
+      flagged_at:    post.regex_miss?.flagged_at || new Date().toISOString(),
+      exported_at:   null, // reset so this appears in the next export
+    };
+  }
+
+  await savePost(post);
+  applyFilters();
   chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
 }
 
@@ -816,95 +885,6 @@ async function regexExtractAll() {
 }
 
 
-// ── Flag editor ───────────────────────────────────────────────────────────────
-//
-// Replaces the bottom card-actions-row (dupe/flag/delete) with an inline form
-// so the user can record what regex got wrong and why. applyFilters() restores
-// the normal card view on save or cancel.
-
-function openFlagEditor(post, cardEl) {
-  const actionRows = cardEl.querySelectorAll('.card-actions-row');
-  const lastRow    = actionRows[actionRows.length - 1];
-  if (!lastRow) return;
-
-  const m    = post.regex_miss || {};
-  const id   = esc(post.post_id);
-  const cl   = m.correct_label || '';
-
-  const ALL_FIELDS = [
-    ['classification', 'Classification (rental vs not rental)'],
-    ['price',          'Price'],
-    ['rooms',          'Rooms'],
-    ['size',           'Size'],
-    ['neighborhood',   'Neighborhood'],
-    ['entry_date',     'Entry date'],
-    ['roommates',      'Roommates'],
-    ['broker',         'Broker fee'],
-    ['other',          'Other'],
-  ];
-  const missedFields = m.missed_fields || [];
-
-  const checkboxes = ALL_FIELDS.map(([val, label]) => `
-    <label><input type="checkbox" name="miss-field" value="${val}" ${missedFields.includes(val) ? 'checked' : ''}> ${label}</label>
-  `).join('');
-
-  lastRow.outerHTML = `
-<div class="card-flag-editor">
-  <div class="flag-editor-row">
-    <span class="flag-editor-label">What did regex get wrong?</span>
-    <div class="flag-fields-grid">${checkboxes}</div>
-  </div>
-  <div class="flag-editor-row">
-    <label class="flag-editor-wide">Correct label
-      <select name="flag-correct-label">
-        <option value=""           ${cl === ''           ? 'selected' : ''}>— unchanged —</option>
-        <option value="rental"     ${cl === 'rental'     ? 'selected' : ''}>✓ Rental</option>
-        <option value="not_rental" ${cl === 'not_rental' ? 'selected' : ''}>✗ Not rental</option>
-      </select>
-    </label>
-  </div>
-  <div class="flag-editor-row">
-    <label class="flag-editor-wide">Key phrase — the text that should have triggered a match
-      <input type="text" name="flag-key-phrase" value="${esc(m.key_phrase || '')}" placeholder="e.g. להשכרה לזמן קצר">
-    </label>
-  </div>
-  <div class="flag-editor-row">
-    <label class="flag-editor-wide">Note (optional)
-      <input type="text" name="flag-note" value="${esc(m.note || '')}" placeholder="any extra context">
-    </label>
-  </div>
-  <div class="tag-editor-actions">
-    <button class="btn-tag-save"   data-action="save-flag"  data-id="${id}">Save flag</button>
-    <button class="btn-tag-cancel" data-action="clear-flag" data-id="${id}">Clear flag</button>
-    <button class="btn-tag-cancel" data-action="cancel-flag" data-id="${id}">Cancel</button>
-  </div>
-</div>`;
-}
-
-async function saveFlagEdits(post, cardEl) {
-  const editor = cardEl.querySelector('.card-flag-editor');
-  if (!editor) return;
-
-  const missedFields  = [...editor.querySelectorAll('[name="miss-field"]:checked')].map(cb => cb.value);
-  const correctLabel  = editor.querySelector('[name="flag-correct-label"]')?.value || null;
-  const keyPhrase     = (editor.querySelector('[name="flag-key-phrase"]')?.value || '').trim() || null;
-  const note          = (editor.querySelector('[name="flag-note"]')?.value || '').trim() || null;
-
-  post.regex_miss = {
-    correct_label: correctLabel || null,
-    missed_fields: missedFields,
-    key_phrase:    keyPhrase,
-    note,
-    flagged_at:    post.regex_miss?.flagged_at || new Date().toISOString(),
-    exported_at:   null, // reset so this correction is included in the next export
-  };
-
-  await savePost(post);
-  chrome.runtime.sendMessage({ type: 'SYNC_LABEL', post }).catch(() => {});
-  updateResultCount();
-  applyFilters();
-}
-
 // ── Export misses ─────────────────────────────────────────────────────────────
 //
 // Collects all posts with an unexported regex_miss, formats them as a
@@ -915,7 +895,7 @@ async function saveFlagEdits(post, cardEl) {
 async function exportMisses() {
   const toExport = allPosts.filter(p => p.regex_miss && !p.regex_miss.exported_at);
   if (toExport.length === 0) {
-    alert('No unexported regex misses.\n\nFlag some posts with ⚑, or all flagged posts have already been exported.\nRe-flag a post to include it in the next export.');
+    alert('No unexported regex misses.\n\nCorrect a post\'s tags with ✏ to flag it, or all flagged posts have already been exported.\nRe-save corrections on a post to include it in the next export.');
     return;
   }
 
@@ -933,13 +913,18 @@ async function exportMisses() {
   ];
 
   toExport.forEach((post, i) => {
-    const m = post.regex_miss;
+    const m  = post.regex_miss;
+    const kp = m.key_phrases || {};
     lines.push('---');
     lines.push(`### Miss ${i + 1}  (post_id: ${post.post_id})`);
-    if (m.correct_label)        lines.push(`Correct label:  ${m.correct_label}`);
     if (m.missed_fields?.length) lines.push(`Missed fields:  ${m.missed_fields.join(', ')}`);
-    if (m.key_phrase)            lines.push(`Key phrase:     "${m.key_phrase}"`);
-    if (m.note)                  lines.push(`Note:           ${m.note}`);
+    if (Object.keys(kp).length) {
+      lines.push('Key phrases:');
+      for (const [field, phrase] of Object.entries(kp)) {
+        lines.push(`  ${field}: "${phrase}"`);
+      }
+    }
+    if (m.note) lines.push(`Note:  ${m.note}`);
     lines.push('');
     lines.push('Post text:');
     lines.push('"""');
