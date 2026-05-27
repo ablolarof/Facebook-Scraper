@@ -931,12 +931,6 @@ async function exportMisses() {
     return;
   }
 
-  let regexSource = '';
-  try {
-    const r = await fetch(chrome.runtime.getURL('lib/regex_extractor.js'));
-    regexSource = await r.text();
-  } catch { regexSource = '[could not read lib/regex_extractor.js]'; }
-
   const now   = new Date().toISOString().slice(0, 10);
   const lines = [
     `# Regex Miss Report — ${now}`,
@@ -968,15 +962,8 @@ async function exportMisses() {
 
   lines.push('---');
   lines.push('');
-  lines.push('## Current lib/regex_extractor.js');
-  lines.push('');
-  lines.push('```js');
-  lines.push(regexSource);
-  lines.push('```');
-  lines.push('');
-  lines.push('---');
   lines.push('Please update lib/regex_extractor.js to handle the cases above.');
-  lines.push('Constraints: regex-only, no API calls, no new imports. Return the complete updated file.');
+  lines.push('Constraints: regex-only, no API calls, no new imports.');
 
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const url  = URL.createObjectURL(blob);
