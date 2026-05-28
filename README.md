@@ -58,7 +58,7 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 2. Open Chrome and navigate to `chrome://extensions`.
 3. Enable **Developer mode** (top-right corner toggle).
 4. Click **Load unpacked** and select the repository folder.
-5. The 🏠 TLV Rentals icon appears in your toolbar.
+5. The "H" TLV Rentals icon appears in your toolbar.
 
 ---
 
@@ -67,7 +67,7 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 ### Scraping
 
 1. Navigate to a Facebook group or feed.
-2. Click the 🏠 icon and press **Scrape This Feed**.
+2. Click the "H" icon and press **Scrape This Feed**.
 3. The extension auto-scrolls and captures posts until it hits the configured stop condition (default: 30 consecutive duplicates or 5 minutes).
 4. Press **■ Stop** at any time. When a stop condition fires, you can **Continue 50 more posts**, **Continue 5 more minutes**, or **Done**.
 
