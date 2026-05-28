@@ -83,10 +83,18 @@ The extractor (`content/extractor.js`) handles these URL shapes in priority orde
 | `?story_fbid=PID` | Profile / home feed | `story_fbid` query param |
 | `?multi_permalinks=PID` | Aggregated `/groups/feed/` timestamp links | `multi_permalinks` query param |
 | `?set=pcb.PID` | Photo-album image links on `/groups/feed/` | numeric ID after `pcb.` |
+| `?set=gm.PID&idorvanity=GID` | Photo-album links on the home feed | numeric ID after `gm.`; `idorvanity` gives GID directly |
 | `/commerce/listing/PID` | Marketplace cross-posts | path segment after `/commerce/listing/` |
 | `/marketplace/item/PID` | Marketplace alternate URL | path segment after `/marketplace/item/` |
 
-**`/groups/feed/` DOM quirk (important).** On the aggregated groups feed, Facebook renders *zero* `/posts/` URLs inside a post's card container. The only post-ID signal is `?set=pcb.POST_ID` on photo image links. The group ID must be read from author links (`/groups/GID/user/UID/`) which live in the post *header*, outside the narrow `cardEl` that `scroller.js` hands to `extractPost()`. The extractor walks up 8 DOM levels to locate `authorEl` when `cardEl.querySelector(SEL.authorLink)` returns null. A further walk-up finds a `/groups/<GID>/` anchor when the author link doesn't contain a group segment.
+**`/groups/feed/` and home-feed DOM quirk (important).** On both the aggregated groups feed and the home feed, Facebook renders *zero* `/posts/` URLs inside a post's card container. The only post-ID signal is on photo image links:
+
+- `?set=pcb.POST_ID` on `/groups/feed/` ("photo card book")
+- `?set=gm.POST_ID&idorvanity=GROUP_ID` on the home feed ("group media")
+
+The group ID must be read from one of: `idorvanity` query param (home feed, easiest), author links (`/groups/GID/user/UID/`), the source-group link, or a walk-up scan for any `/groups/<GID>/` anchor. The extractor walks up 8 DOM levels to locate `authorEl` when `cardEl.querySelector(SEL.authorLink)` returns null.
+
+**Pcb/gm shadowing trap on group pages.** A reused branding image (e.g. a company logo first uploaded in 2017) carries `?set=pcb.OLD_POST_ID` from the *original* photo album. If the extractor returns that pcb anchor eagerly, the walk-up in `extractPost()` stops before reaching the card-header ancestor with the real `/posts/CURRENT_ID` link — yielding the wrong post_id AND a 2017 `posted_at` from the image anchor's aria-label. `pickPermalink()` therefore deliberately skips pcb/gm links on specific group pages; they are tried as a last resort only after the full walk-up has run.
 
 ### Deletion and re-scraping
 

@@ -68,6 +68,8 @@ window.TLVScroller = (function () {
     // path-style pcb references (Recommended Reels) are NOT matched here because they
     // lack the "set=" prefix, so this selector does not re-introduce the Reels pollution.
     'a[href*="set=pcb."]',
+    // Home-feed group posts use ?set=gm.POST_ID&idorvanity=GROUP_ID on photo links.
+    'a[href*="set=gm."]',
   ].join(', ');
 
   // How many DOM levels above the text element we'll search before giving up.
