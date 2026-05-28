@@ -108,7 +108,21 @@ window.TLVExtractor = (function () {
     const textEl = find(cardEl, SEL.postText, 'postText');
     const text   = textEl ? (textEl.innerText || textEl.textContent || '').trim() : '';
 
-    const authorEl           = cardEl.querySelector(SEL.authorLink);
+    // Author link. On the aggregated /groups/feed/, the cardEl that scroller
+    // returns is often narrow (the body/image scope) and excludes the post
+    // header — so the /groups/<gid>/user/<uid>/ author anchor lives in a
+    // wider ancestor. Walk up looking for it, capped at 8 levels to avoid
+    // crossing into neighbouring cards. This also makes the pcb-permalink
+    // branch below able to derive the group ID from the author URL.
+    let authorEl = cardEl.querySelector(SEL.authorLink);
+    if (!authorEl) {
+      let ancestor = cardEl.parentElement;
+      for (let _ai = 0; _ai < 8 && ancestor && ancestor !== document.body; _ai++) {
+        authorEl = ancestor.querySelector(SEL.authorLink);
+        if (authorEl) break;
+        ancestor = ancestor.parentElement;
+      }
+    }
     const author_name        = authorEl ? authorEl.textContent.trim() : '';
     const author_profile_url = authorEl ? authorEl.href : '';
 
@@ -182,23 +196,40 @@ window.TLVExtractor = (function () {
           } else if (pcbId) {
             // Photo-album links (?set=pcb.POST_ID) — the numeric ID after pcb. IS
             // the parent post ID. Build a canonical group permalink using whatever
-            // group-ID signal we can find: page URL > author link > source group link.
+            // group-ID signal we can find: page URL > author link > source group
+            // link > walk-up looking for any /groups/<id>/ anchor.
             let gid = (pageGroupId && pageGroupId !== 'feed') ? pageGroupId : null;
             if (!gid) {
               const gm = author_profile_url.match(/\/groups\/([^/?#]+)\//);
-              if (gm) gid = gm[1];
+              if (gm && gm[1] !== 'feed') gid = gm[1];
             }
             if (!gid) {
               const glEl = cardEl.querySelector(SEL.sourceGroupLink);
               if (glEl) {
                 const gm2 = (glEl.href || '').match(/\/groups\/([^/?#]+)/);
-                if (gm2) gid = gm2[1];
+                if (gm2 && gm2[1] !== 'feed') gid = gm2[1];
+              }
+            }
+            if (!gid) {
+              // Last-resort: walk up from cardEl looking for ANY anchor whose
+              // href is /groups/<id>/… (author link, profile-name title, etc.).
+              // The L6 dump for an Itamar Berkowicz post shows four such anchors
+              // in the wider card scope even though cardEl is narrower than that.
+              // Depth-capped to 8 to avoid bleeding into a neighbouring card.
+              let ancestor = cardEl;
+              for (let _pi = 0; _pi < 8 && ancestor && ancestor !== document.body; _pi++) {
+                const groupA = ancestor.querySelector('a[href*="/groups/"]');
+                if (groupA) {
+                  const gm3 = (groupA.getAttribute('href') || '').match(/\/groups\/([^/?#]+)/);
+                  if (gm3 && gm3[1] !== 'feed') { gid = gm3[1]; break; }
+                }
+                ancestor = ancestor.parentElement;
               }
             }
             if (gid) {
               permalink = 'https://www.facebook.com/groups/' + gid + '/posts/' + pcbId + '/';
             } else {
-              // No group ID found — keep the photo-set URL as a last resort.
+              // No group ID found anywhere — keep the photo-set URL as a last resort.
               permalink = u.origin + u.pathname + '?set=' + encodeURIComponent(pcbSet);
             }
           } else {
