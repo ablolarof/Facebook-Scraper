@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "TLV Rentals [dev - scrape fix]",
-  "version": "1.1.4",
+  "name": "TLV Rentals",
+  "version": "1.1.5",
   "description": "Scrape and track Tel Aviv apartment rental listings from Facebook groups",
 
   "permissions": ["storage", "tabs"],
