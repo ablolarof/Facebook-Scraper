@@ -14,11 +14,13 @@
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
 - **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`).
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
+- **Canonical Open links** — every post's Open button resolves to the correct canonical Facebook URL across all URL patterns: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `/commerce/listing/`, and `/marketplace/item/`.
 - **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
 - **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Deduplication** — posts are fingerprinted on save (SHA-256 of normalised text + first image URL). A duplicate inherits the original's classification so we don't redo work on identical content.
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
-- **Permanent delete** — a trash button on each card. Deleted posts come back if Facebook still shows them on a future scrape — there's no permanent blocklist.
+- **Permanent delete** — a trash button on each card removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
+- **Delete All** — wipes the entire database so the next scrape starts from a clean slate. Requires explicit confirmation in the dashboard (shows the current post count before you confirm).
 - **Auto-scrape URL parameter** — appending `?tlv_auto_scrape=1` to a Facebook URL starts a 30-minute scrape automatically after a 4-second render delay. Useful for scheduled-task workflows.
 - **Export JSON** — dump every IndexedDB record to a JSON file for backup or external analysis.
 
@@ -77,7 +79,8 @@ Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[i
 - **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` in IndexedDB.
 - **Show more / Show less** — long card text is line-clamped to 3 lines; click to expand. Expanded state persists across re-renders.
 - **⊘ Dupe** — toggle a post's duplicate flag manually.
-- **🗑 Delete** — permanently remove a post. It will be re-scraped if it still appears on Facebook.
+- **🗑 Delete** — removes the post from IndexedDB. It will be re-captured on the next fresh scrape if Facebook still shows it.
+- **🗑 Delete All** — wipes every post from IndexedDB. Requires confirmation (shows the current count). Use this before a re-scrape when you want a clean slate.
 - **Export JSON** — download every IndexedDB record as a JSON file.
 
 ### Auto-scrape via URL parameter
@@ -121,7 +124,7 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 ## Roadmap
 
 1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
-2. **Fix the Open button.** Currently only links correctly when the post URL contains `/commerce/listing/`.
+2. ~~**Fix the Open button.**~~ ✅ Done (v1.1.4) — canonical URLs now work for all Facebook URL patterns: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID`, `/commerce/listing/`, `/marketplace/item/`.
 3. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
 4. **Fix the group-name capture bug.** Some group names come through truncated.
 

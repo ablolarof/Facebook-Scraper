@@ -25,7 +25,7 @@ These stages are sequential.
 
 1. **Drop Gemini entirely — regex-only pipeline** (complete as of 2026-05-26). `lib/gemini.js` deleted; `host_permissions` no longer mentions `generativelanguage.googleapis.com`; popup has no settings panel; dashboard has no "Classify & Tag" button. Classification is now `lib/regex_extractor.js` only, called inline from `background.js` on every `SAVE_POST`. Existing Gemini-extracted tags in IDB were left in place — no migration.
 2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss and record *why* the correct answer is correct. The "why" is the training signal — the user batches these and pastes them to Claude, who updates `lib/regex_extractor.js` rules accordingly.
-3. **Fix the Open button.** Currently links correctly only when the post URL contains `/commerce/listing/`. Group-page permalinks land users on the wrong page or a disabled stub.
+3. **Fix the Open button.** (Complete as of 2026-05-28.) Canonical permalink construction now works across all Facebook URL patterns: `/posts/`, `/permalink/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `/commerce/listing/`, and `/marketplace/item/`. The extractor walks up to 8 DOM levels to locate the group ID when the card container is too narrow to contain the author link.
 4. **Improve duplicate detection.** Current dedup is SHA-256 of normalised text + first image URL. Many cross-posted listings with slightly different wording slip through.
 5. **Fix the group-name capture bug.** Some group names come through truncated.
 
@@ -52,7 +52,7 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **content/content.js** | Main content script — orchestrates scraper state machine. |
 | **popup/popup.js** | Popup UI — scrape controls, live status polling. |
 | **dashboard/dashboard.js** | Dashboard — loads posts, filters in-memory, tag editor, Regex Extract backfill. |
-| **lib/db.js** | IndexedDB wrapper. |
+| **lib/db.js** | IndexedDB wrapper — including `clearAllPosts()` for bulk deletion. |
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
 
@@ -71,6 +71,28 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 3. Click the pencil button on a card to edit tags — corrections are stored in IndexedDB
 
 ## Key concepts & gotchas
+
+### Facebook URL patterns and permalink construction
+
+The extractor (`content/extractor.js`) handles these URL shapes in priority order:
+
+| Pattern | Where it appears | Post-ID derivation |
+|---------|------------------|--------------------|
+| `/groups/GID/posts/PID/` | Individual group pages | path segment after `/posts/` |
+| `/groups/GID/permalink/PID/` | Older group-page format | path segment after `/permalink/` |
+| `?story_fbid=PID` | Profile / home feed | `story_fbid` query param |
+| `?multi_permalinks=PID` | Aggregated `/groups/feed/` timestamp links | `multi_permalinks` query param |
+| `?set=pcb.PID` | Photo-album image links on `/groups/feed/` | numeric ID after `pcb.` |
+| `/commerce/listing/PID` | Marketplace cross-posts | path segment after `/commerce/listing/` |
+| `/marketplace/item/PID` | Marketplace alternate URL | path segment after `/marketplace/item/` |
+
+**`/groups/feed/` DOM quirk (important).** On the aggregated groups feed, Facebook renders *zero* `/posts/` URLs inside a post's card container. The only post-ID signal is `?set=pcb.POST_ID` on photo image links. The group ID must be read from author links (`/groups/GID/user/UID/`) which live in the post *header*, outside the narrow `cardEl` that `scroller.js` hands to `extractPost()`. The extractor walks up 8 DOM levels to locate `authorEl` when `cardEl.querySelector(SEL.authorLink)` returns null. A further walk-up finds a `/groups/<GID>/` anchor when the author link doesn't contain a group segment.
+
+### Deletion and re-scraping
+
+- **Individual delete** — `db.js::deletePost(id)` removes by primary key. The `_seenContainers` WeakSet in `scroller.js` is in-memory and session-scoped, so deleted posts are re-sent to `background.js` on the next fresh scrape (START_SCRAPE resets both WeakSets). The background dedup check (`findByDedupHash`) only blocks posts still in IndexedDB.
+- **Delete All** — `db.js::clearAllPosts()` calls `IDBObjectStore.clear()`. Dashboard has a "🗑 Delete All" button (requires typed confirmation + post-count display). After clearing, the next scrape re-captures everything from scratch.
+- **CONTINUE_SCRAPE** does **not** reset the WeakSets — it picks up exactly where the previous session left off, intentionally skipping already-seen containers.
 
 ### Deduplication strategy
 
