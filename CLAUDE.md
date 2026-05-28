@@ -15,7 +15,7 @@ The extension is fully offline. No data leaves your machine.
 1. The hypothesis about what is broken or how the current behaviour actually works, *and*
 2. The proposed fix will actually do what is intended.
 
-Hand the user paste-ready snippets — DevTools console blocks against the live extension, shell commands, SQL queries against `training.db`, IndexedDB inspection scripts. Wait for the results before modifying files. If the diagnostic disproves the hypothesis, revise the plan rather than ship the change anyway.
+Hand the user paste-ready snippets — DevTools console blocks against the live extension, shell commands, IndexedDB inspection scripts. Wait for the results before modifying files. If the diagnostic disproves the hypothesis, revise the plan rather than ship the change anyway.
 
 This applies to every stage of the project — bug fixes, refactors, new features. Skipping the diagnostic step has historically led to rewrites and lost work.
 
@@ -130,15 +130,19 @@ Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classi
 ### Popup ↔ content script
 
 - `PING` → `{ alive, groupId, groupName }`
-- `GET_STATS` → `{ running, postsCaptured, duplicatesInARow, totalDuplicates, elapsedMs, startTime, stopReason }`
+- `GET_STATS` → `{ running, postsCaptured, duplicatesInARow, totalDuplicates, totalOverwrites, elapsedMs, startTime, stopReason }`
 - `START_SCRAPE { options: { duplicateThreshold, maxDurationMinutes } }` → `{ ok }`
 - `STOP_SCRAPE` → `{ ok }`
 - `CONTINUE_SCRAPE { options: { extraPosts | extraMinutes, duplicateThreshold } }` → `{ ok }`
 
+`totalOverwrites` counts saves that targeted an already-existing `post_id` — the row was silently overwritten, no net new record. Distinct from `totalDuplicates`, which counts dedup-hash matches that happen to have a *different* `post_id` (cross-group reposts of identical content). Both count toward the duplicates-in-a-row stop condition.
+
 ### Content script ↔ service worker
 
-- `SAVE_POST { post }` → `{ ok, is_duplicate }`
+- `SAVE_POST { post }` → `{ ok, is_duplicate, is_new_record }`
 - `GET_TOTAL_COUNT` → `{ count }`
+
+`is_new_record` is `true` when no row with the post's `post_id` existed before this save; `false` when an existing row was overwritten. The popup uses this to render "X new + Y duplicates + Z re-scraped" accurately.
 
 ### Dashboard ↔ service worker
 

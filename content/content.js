@@ -62,6 +62,7 @@
       postsCaptured:     0,
       duplicatesInARow:  0,
       totalDuplicates:   0,
+      totalOverwrites:   0,        // posts whose post_id already existed → silently updated, not added
       elapsedMs:         0,
       startTime:         null,
       stopReason:        null,   // null | 'max_dupes' | 'max_duration' | 'manual'
@@ -89,6 +90,7 @@
         postsCaptured:     state.postsCaptured,
         duplicatesInARow:  state.duplicatesInARow,
         totalDuplicates:   state.totalDuplicates,
+        totalOverwrites:   state.totalOverwrites,
         elapsedMs:         state.elapsedMs,
         startTime:         state.startTime,
         stopReason:        state.stopReason,
@@ -175,11 +177,29 @@
 
             state.postsCaptured++;
 
+            // Three outcomes per save:
+            //   1. is_duplicate  — same dedup_hash as a DIFFERENT existing post_id
+            //                      (cross-group repost of identical content).
+            //   2. !is_new_record — same post_id already in IDB → savePost() overwrote
+            //                      the existing row, no new record was added. Happens
+            //                      when re-scraping a post we already have, OR when
+            //                      hash-fallback IDs collide on the home feed.
+            //   3. is_new_record  — a fresh row in IDB.
+            //
+            // Both (1) and (2) count toward the duplicates-in-a-row stop condition:
+            // if we're scrolling past content we already have, that IS the signal to
+            // stop, regardless of whether the trigger was a cross-post or a re-scrape.
             if (result.is_duplicate) {
               state.totalDuplicates++;
               if (extraPostsRemaining > 0) {
                 extraPostsRemaining--;
-                // Don't count against threshold during a "Continue N more posts" window.
+              } else {
+                state.duplicatesInARow++;
+              }
+            } else if (result.is_new_record === false) {
+              state.totalOverwrites++;
+              if (extraPostsRemaining > 0) {
+                extraPostsRemaining--;
               } else {
                 state.duplicatesInARow++;
               }

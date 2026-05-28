@@ -53,7 +53,7 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 
 1. Clone or download this repository:
    ```bash
-   git clone https://github.com/ablolarof/tel-aviv-facebook-scraper.git
+   git clone https://github.com/ablolarof/Tel-Aviv-Facebook-Scraper.git
    ```
 2. Open Chrome and navigate to `chrome://extensions`.
 3. Enable **Developer mode** (top-right corner toggle).

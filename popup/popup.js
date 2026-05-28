@@ -171,12 +171,23 @@ async function pollStats() {
 }
 
 function renderStatusLine(stats) {
-  const elapsed   = formatElapsed(stats.elapsedMs || 0);
-  const scanned   = stats.postsCaptured  || 0;
-  const dupes     = stats.totalDuplicates || 0;
-  const newPosts  = Math.max(0, scanned - dupes);
+  // Three outcomes per scanned post:
+  //   new        — added a fresh row to IndexedDB
+  //   duplicates — same content (dedup hash) as a different existing post_id
+  //   re-scraped — same post_id as an existing row (silent overwrite)
+  // re-scraped is only shown when > 0 to keep the idle line uncluttered.
+  const elapsed    = formatElapsed(stats.elapsedMs || 0);
+  const scanned    = stats.postsCaptured  || 0;
+  const dupes      = stats.totalDuplicates || 0;
+  const overwrites = stats.totalOverwrites || 0;
+  const newPosts   = Math.max(0, scanned - dupes - overwrites);
+
+  const parts = [`${newPosts} new`];
+  if (dupes > 0)      parts.push(`${dupes} duplicates`);
+  if (overwrites > 0) parts.push(`${overwrites} re-scraped`);
+
   el('status-line').textContent =
-    `Scraping… ${scanned} scanned (${newPosts} new + ${dupes} duplicates) · ${elapsed}`;
+    `Scraping… ${scanned} scanned (${parts.join(' + ')}) · ${elapsed}`;
 }
 
 // ── UI state helpers ───────────────────────────────────────────────────────────

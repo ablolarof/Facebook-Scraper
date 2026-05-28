@@ -37,15 +37,6 @@ tlv-regex-misses-*.txt
 scratch/
 tmp/
 
-# ── Python ─────────────────────────────────────────────────────────────────
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# ── Training data (local SQLite DB, not for source control) ────────────────
-server/training.db
-
 # ── Claude Code internal state ──────────────────────────────────────────────
 .claude/
 

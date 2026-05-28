@@ -14,7 +14,7 @@
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard.
 
-import { savePost, findByDedupHash, countPosts } from './lib/db.js';
+import { savePost, findByDedupHash, countPosts, getPost } from './lib/db.js';
 import { computeDedupHash } from './lib/dedup.js';
 import { regexClassifyPost, regexExtractTags, mergeWithRegex }
   from './lib/regex_extractor.js';
@@ -53,6 +53,13 @@ async function handleSavePost(post) {
       image_urls: post.image_urls,
     });
     const existing = await findByDedupHash(dedupHash);
+
+    // Did a record with this exact post_id already exist? If yes, savePost()
+    // will overwrite it (silent re-save), not add a new row to IDB. The popup
+    // uses this to distinguish "truly new" from "we already had this one" —
+    // important on the home feed where the same post can reappear in the feed
+    // and any hash-fallback collision would silently overwrite an existing row.
+    const wasNewRecord = !(await getPost(post.post_id));
 
     post.dedup_hash       = dedupHash;
     post.human_label      = post.human_label      ?? null;
@@ -111,7 +118,7 @@ async function handleSavePost(post) {
     }
 
     await savePost(post);
-    return { ok: true, is_duplicate: post.is_duplicate };
+    return { ok: true, is_duplicate: post.is_duplicate, is_new_record: wasNewRecord };
 
   } catch (err) {
     console.error('[TLV Rentals] Error saving post:', err);
