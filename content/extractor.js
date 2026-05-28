@@ -142,6 +142,26 @@ window.TLVExtractor = (function () {
       }
     }
 
+    // On a specific group page, pickPermalink deliberately skips pcb image links
+    // so the walk-up above can reach the card-header ancestor containing the real
+    // /posts/ timestamp link. If the walk-up exhausted all ancestors without
+    // finding a proper /posts/ link, fall back to pcb (the photo-album ID encodes
+    // the real post ID for posts that genuinely have no /posts/ anchor in the DOM).
+    if (!permalinkEl && pageGroupId && pageGroupId !== 'feed') {
+      var _pcbScope = cardEl;
+      outer: for (var _pci = 0; _pci <= 8 && _pcbScope && _pcbScope !== document.body; _pci++) {
+        var _pcbLinks = Array.from(_pcbScope.querySelectorAll('a[href*="set=pcb."]'));
+        for (var _pcbi = 0; _pcbi < _pcbLinks.length; _pcbi++) {
+          try {
+            var _pcbU   = new URL(_pcbLinks[_pcbi].href || '', location.origin);
+            var _pcbSet = _pcbU.searchParams.get('set');
+            if (_pcbSet && _pcbSet.startsWith('pcb.')) { permalinkEl = _pcbLinks[_pcbi]; break outer; }
+          } catch (_) {}
+        }
+        _pcbScope = _pcbScope.parentElement;
+      }
+    }
+
     let post_id;
     let permalink = '';
     let posted_at;
@@ -390,10 +410,15 @@ window.TLVExtractor = (function () {
       if (u.pathname.indexOf(groupPathFragment) !== -1) return el;
       if (u.pathname.indexOf('/commerce/listing/') !== -1) return el;
       if (u.pathname.indexOf('/marketplace/item/') !== -1) return el;
-      // Photo-album links don't carry /groups/<id>/ in their path, but the
-      // pcb ID IS the post ID, so accept them regardless of group context.
-      const setP = u.searchParams.get('set');
-      if (setP && setP.startsWith('pcb.')) return el;
+      // pcb image links are intentionally NOT returned here on a specific group
+      // page. A reused branding image (e.g. a company logo first uploaded in 2017)
+      // carries ?set=pcb.OLD_POST_ID — the album ID from the ORIGINAL post, not the
+      // current one. The image anchor appears in the card body scope, while the real
+      // /posts/CURRENT_ID timestamp link lives in the card header (a wider ancestor).
+      // Returning pcb here would stop the walk-up in extractPost before it reaches
+      // that header, giving the wrong post_id and a 2017 posted_at from the image
+      // anchor's aria-label. pcb is tried as a last resort in extractPost only after
+      // the full walk-up has run without finding a proper /posts/ link.
     }
     return null;
   }
