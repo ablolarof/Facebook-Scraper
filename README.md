@@ -114,7 +114,6 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 
 ├── icons/                              # 16/48/128 PNG icons
-├── JSONs-(Training)/                   # Dashboard JSON exports
 ├── CLAUDE.md                           # Project guide for Claude Code
 ├── LICENSE                             # GNU GPL v3.0
 └── README.md
