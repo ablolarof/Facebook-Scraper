@@ -1,5 +1,17 @@
 // content/extractor.js — DOM extraction
 //
+// === Fix 2: div[dir="auto"] body-text fallback (2026-05-29) =====================
+// Posts with no data-ad-* message element (the missing cluster confirmed by
+// DIAGNOSIS_AND_FIX_REPORT.md §5 RC1) previously extracted empty text. This
+// version falls back to the largest div[dir="auto"] block in the card when
+// SEL.postText finds nothing. Author names and other dir=auto labels are far
+// shorter than the post body, so "largest by text length" reliably lands on the
+// prose (verified on a Florentin 2.5-room rental: len ~324, newline-ratio ~0.03).
+//
+// Fix 3 (slug/numeric permalink for the Open button) is NOT applied here.
+// See DIAGNOSIS_AND_FIX_REPORT.md §7 Fix 3 for the spec.
+// ================================================================================
+//
 // Loaded as a plain (non-module) script. Exposes window.TLVExtractor so that
 // content.js (loaded afterwards) can call TLVExtractor.extractPost().
 //
@@ -109,8 +121,19 @@ window.TLVExtractor = (function () {
   function extractPost(cardEl, pageGroupId, pageGroupName) {
 
     // ── Post text & author ─────────────────────────────────────────────────
-    const textEl = find(cardEl, SEL.postText, 'postText');
-    const text   = textEl ? (textEl.innerText || textEl.textContent || '').trim() : '';
+    // Fix 2: prefer the data-ad-* message element; if absent/empty (anchor-less
+    // posts whose body is a plain div[dir="auto"]), fall back to the largest
+    // div[dir="auto"] block in the card. Using querySelector directly (not find())
+    // avoids spurious "Selector miss" warnings for this now-expected case.
+    const textEl = cardEl.querySelector(SEL.postText);
+    let text     = textEl ? (textEl.innerText || textEl.textContent || '').trim() : '';
+    // Anchor missing, OR anchor is just a shared-link preview URL (the post's
+    // prose then lives in a plain div[dir="auto"]) → use the largest NON-COMMENT
+    // dir=auto block. Comment text (role="article" subtrees) is never the body.
+    if (!text || /^https?:\/\/\S+$/.test(text)) {
+      const prose = pickFallbackBodyText(cardEl);
+      if (prose) text = prose;
+    }
 
     // Author link. On the aggregated /groups/feed/, the cardEl that scroller
     // returns is often narrow (the body/image scope) and excludes the post
@@ -118,11 +141,11 @@ window.TLVExtractor = (function () {
     // wider ancestor. Walk up looking for it, capped at 8 levels to avoid
     // crossing into neighbouring cards. This also makes the pcb-permalink
     // branch below able to derive the group ID from the author URL.
-    let authorEl = cardEl.querySelector(SEL.authorLink);
+    let authorEl = pickAuthorLink(cardEl);
     if (!authorEl) {
       let ancestor = cardEl.parentElement;
       for (let _ai = 0; _ai < 8 && ancestor && ancestor !== document.body; _ai++) {
-        authorEl = ancestor.querySelector(SEL.authorLink);
+        authorEl = pickAuthorLink(ancestor);
         if (authorEl) break;
         ancestor = ancestor.parentElement;
       }
@@ -137,9 +160,19 @@ window.TLVExtractor = (function () {
     // links to OTHER groups, cross-post originals) is rejected here. Walk-up
     // depth 20 matches scroller.js's MAX_WALK_UP so they stay in sync.
     let permalinkEl = pickPermalink(cardEl, pageGroupId);
+    // Walk-up boundary: never scan up into the role="feed" container. With
+    // feed-child detection cardEl's parent IS the feed, which holds EVERY post
+    // — scanning it grabs a NEIGHBOUR's /posts/ link and stamps the same id on
+    // every commentless post (confirmed live: 12+ posts → 1 id, mutual
+    // overwrite). The whole post already lives inside cardEl; a card with no
+    // permalink here is a commentless post that correctly falls through to the
+    // author+text hash id below. On surfaces with no role="feed" (legacy Path-2),
+    // _feedEl is null and the walk-up behaves exactly as before.
+    var _feedEl = cardEl.closest('[role="feed"]');
     if (!permalinkEl) {
       let ancestor = cardEl.parentElement;
       for (var _i = 0; _i < 20 && ancestor && ancestor !== document.body; _i++) {
+        if (_feedEl && ancestor.contains(_feedEl)) break;  // reached/passed the feed → stop
         permalinkEl = pickPermalink(ancestor, pageGroupId);
         if (permalinkEl) break;
         ancestor = ancestor.parentElement;
@@ -154,6 +187,9 @@ window.TLVExtractor = (function () {
     if (!permalinkEl && pageGroupId && pageGroupId !== 'feed') {
       var _pcbScope = cardEl;
       outer: for (var _pci = 0; _pci <= 8 && _pcbScope && _pcbScope !== document.body; _pci++) {
+        // Same feed-boundary guard as the permalink walk-up above: don't scan a
+        // pcb/gm link out of a neighbouring post in the shared feed container.
+        if (_feedEl && _pcbScope !== cardEl && _pcbScope.contains(_feedEl)) break;
         var _pcbLinks = Array.from(_pcbScope.querySelectorAll('a[href*="set=pcb."], a[href*="set=gm."]'));
         for (var _pcbi = 0; _pcbi < _pcbLinks.length; _pcbi++) {
           try {
@@ -306,9 +342,32 @@ window.TLVExtractor = (function () {
       }
     }
 
+    // Comment-link recovery: before hashing, see if any COMMENT in this card
+    // exposes the parent post id (…/posts/<id>/?comment_id=…). This rescues
+    // posts that have comments but no own timestamp permalink — and sidesteps
+    // the slug-vs-numeric rejection, because we rebuild the URL with the known
+    // numeric pageGroupId rather than trusting the link's group token.
     if (!permalinkEl) {
-      // No usable permalink — hash author + first 200 chars of text so the
-      // same post yields the same post_id on subsequent scrapes (dedup).
+      const recovered = pickPostIdFromComments(cardEl);
+      if (recovered) {
+        post_id = recovered.postId;
+        let gid = (pageGroupId && pageGroupId !== 'feed') ? pageGroupId : null;
+        if (!gid) {
+          const gm = (author_profile_url || '').match(/\/groups\/([^/?#]+)\//);
+          if (gm && gm[1] !== 'feed') gid = gm[1];
+        }
+        if (!gid) gid = recovered.groupToken;   // last resort: the slug from the comment href
+        permalink = gid
+          ? 'https://www.facebook.com/groups/' + gid + '/posts/' + recovered.postId + '/'
+          : '';
+        posted_at = findPostedAt(cardEl, null) || new Date().toISOString();
+      }
+    }
+
+    if (!permalinkEl && !post_id) {
+      // No usable permalink and no comment-recoverable id — hash author + first
+      // 200 chars of text so the same post yields the same post_id on subsequent
+      // scrapes (dedup).
       if (!text && !author_name) {
         console.warn('[TLV Rentals] Skipping card with neither permalink nor content');
         return null;
@@ -349,11 +408,15 @@ window.TLVExtractor = (function () {
     }
 
     // ── Images ─────────────────────────────────────────────────────────────
-    const image_urls = SEL.images
-      ? Array.from(cardEl.querySelectorAll(SEL.images))
-          .map(img => img.src)
-          .filter(src => src && !src.includes('emoji') && !src.includes('reaction'))
-      : [];
+    // Exclude images inside comments (role="article") so commenter avatars and
+    // comment photos don't pollute image_urls (dedup keys on the first image).
+    // Safe degradation: if filtering leaves none, keep all matches.
+    let _imgEls = SEL.images ? Array.from(cardEl.querySelectorAll(SEL.images)) : [];
+    const _nonCommentImgs = _imgEls.filter(img => !img.closest('[role="article"]'));
+    if (_nonCommentImgs.length) _imgEls = _nonCommentImgs;
+    const image_urls = _imgEls
+      .map(img => img.src)
+      .filter(src => src && !src.includes('emoji') && !src.includes('reaction'));
 
     // ── Source group (feed page only) ──────────────────────────────────────
     let group_id   = pageGroupId;
@@ -408,7 +471,51 @@ window.TLVExtractor = (function () {
     return result;
   }
 
+  // Fix 2: fallback body text for posts with no data-ad-* message element.
+  // Their prose renders as a plain div[dir="auto"]. The author name and other
+  // dir=auto labels are much shorter than the post body, so the largest block
+  // reliably lands on the prose.
+  // Verified: a Florentin rental the body-anchor scraper missed had its prose in
+  // div[dir="auto"], len ~324, clean Hebrew (newline-ratio ~0.03).
+  function pickFallbackBodyText(cardEl) {
+    const blocks = cardEl.querySelectorAll('div[dir="auto"]');
+    let best = '', bestLen = 0;          // largest NON-COMMENT block (the post body)
+    let bestAny = '', bestAnyLen = 0;    // largest overall (safe degradation)
+    for (let i = 0; i < blocks.length; i++) {
+      const t = (blocks[i].innerText || '').trim();
+      if (t.length > bestAnyLen) { bestAnyLen = t.length; bestAny = t; }
+      if (blocks[i].closest('[role="article"]')) continue;   // skip comment text
+      if (t.length > bestLen) { bestLen = t.length; best = t; }
+    }
+    return best || bestAny;
+  }
+
+  // Pick the post author's profile link. Facebook renders 2–3 anchors to the same
+  // /user/ id in a post header: an avatar-wrapper link (empty text) and the name
+  // link. A plain querySelector grabs the empty avatar link → empty author_name
+  // (observed on group 327483250942). Prefer the first NON-COMMENT author link
+  // that actually has text; fall back to the first non-comment link so the
+  // profile URL is never lost.
+  function pickAuthorLink(scopeEl) {
+    const links = scopeEl.querySelectorAll(SEL.authorLink);
+    let firstNonComment = null;
+    for (let i = 0; i < links.length; i++) {
+      if (links[i].closest('[role="article"]')) continue;    // skip commenter links
+      if (!firstNonComment) firstNonComment = links[i];
+      if ((links[i].textContent || '').trim()) return links[i];
+    }
+    return firstNonComment;
+  }
+
   // Pick the best permalink anchor inside scopeEl.
+  //
+  // NOTE (Fix 3, not yet applied): on a specific group page this rejects a
+  // valid /posts/ link when the page URL's group token (numeric ID) differs
+  // from the link's token (vanity slug). The symptom is a disabled Open button.
+  // Fix: also accept a candidate whose aria-label / textContent parses as a
+  // relative timestamp via parseRelativeTime() — that is the post's own
+  // timestamp permalink by definition, regardless of slug vs numeric.
+  // See DIAGNOSIS_AND_FIX_REPORT.md §7 Fix 3.
   //
   // On a specific group page (pageGroupId set and not "feed"), require the
   // captured URL to either:
@@ -459,6 +566,39 @@ window.TLVExtractor = (function () {
       // extractPost only after the full walk-up has run without finding a /posts/.
     }
     return null;
+  }
+
+  // Comment-link recovery (read-only) for posts that have comments but no own
+  // timestamp permalink. Every comment's timestamp href encodes the PARENT post
+  // id in its path:
+  //   /groups/<gid>/posts/<POST_ID>/?comment_id=…
+  //   /groups/<gid>/permalink/<POST_ID>/?comment_id=…
+  // cardEl is a single feed-child (one post), so every comment inside it belongs
+  // to THIS post — the MODE post id is unambiguously the post's own (robust if a
+  // comment quotes another post's link). Validated live on group 327483250942:
+  // 0 collisions across 81 posts. Returns { postId, groupToken } or null.
+  //
+  // This resolves the slug-vs-numeric rejection (report RC2): the comment href
+  // carries the vanity slug (…/groups/secrettelaviv/posts/…) which pickPermalink
+  // rejects against the numeric page-URL group id, even though it's the same group.
+  function pickPostIdFromComments(cardEl) {
+    const counts = Object.create(null);
+    const gidFor = Object.create(null);
+    const links  = cardEl.querySelectorAll('a[href*="comment_id"]');
+    for (let i = 0; i < links.length; i++) {
+      const href = links[i].getAttribute('href') || '';
+      const m = href.match(/\/(?:posts|permalink)\/(\d+)/);
+      if (!m) continue;
+      const id = m[1];
+      counts[id] = (counts[id] || 0) + 1;
+      if (!gidFor[id]) {
+        const gm = href.match(/\/groups\/([^/?#]+)\//);
+        if (gm) gidFor[id] = gm[1];
+      }
+    }
+    let bestId = null, bestN = 0;
+    for (const id in counts) if (counts[id] > bestN) { bestN = counts[id]; bestId = id; }
+    return bestId ? { postId: bestId, groupToken: gidFor[bestId] || null } : null;
   }
 
   function derivePostId(url) {
@@ -565,21 +705,35 @@ window.TLVExtractor = (function () {
     const now = Date.now();
     label = label.trim().toLowerCase();
 
+    // Guard: a genuine relative timestamp label is short ("4h", "3 days ago").
+    // A shared-link preview or post body that merely CONTAINS a time-like token
+    // (e.g. "bDeRbb5y.com…" → "5y") is long. findPostedAt scans every <a> in the
+    // card and takes the FIRST that parses, so without this a link-preview anchor
+    // can win and stamp a bogus date (observed: a post dated 1825d = 5×365 ago
+    // because its ticket-link URL contained "bb5y"). 48 chars covers all real
+    // formats including absolute dates like "Tuesday, May 24 at 7:18 PM".
+    if (label.length > 48) return null;
+
     // Order matters: 'mo'/'mon'/'month' must match BEFORE plain 'm' (minutes),
     // and 'y'/'yr'/'year' likewise. Months approximated as 30 days, years as
     // 365 days — close enough for a "when was this listed" filter.
+    //
+    // (?<![a-z0-9./]) — the number must not be glued to a letter/digit or sit
+    // right after "/" or ".", so URL/ID fragments ("bb5y", "url2d", "bit.ly/3h")
+    // are not misread as durations. Real timestamps never have those before the
+    // number; standalone tokens ("5y", "2d") still match.
     let parsedMs = null;
-    const mYears  = label.match(/(\d+)\s*y(?:r|ear)?s?\b/);
+    const mYears  = label.match(/(?<![a-z0-9./])(\d+)\s*y(?:r|ear)?s?\b/);
     if (mYears)  parsedMs = now - parseInt(mYears[1])  * 31536000000;
-    const mMonths = label.match(/(\d+)\s*mo(?:n|nth)?s?\b/);
+    const mMonths = label.match(/(?<![a-z0-9./])(\d+)\s*mo(?:n|nth)?s?\b/);
     if (parsedMs == null && mMonths) parsedMs = now - parseInt(mMonths[1]) * 2592000000;
-    const mWeeks  = label.match(/(\d+)\s*w(?:k|eek)?s?\b/);
+    const mWeeks  = label.match(/(?<![a-z0-9./])(\d+)\s*w(?:k|eek)?s?\b/);
     if (parsedMs == null && mWeeks)  parsedMs = now - parseInt(mWeeks[1])  * 604800000;
-    const mDays   = label.match(/(\d+)\s*d(?:ay)?s?\b/);
+    const mDays   = label.match(/(?<![a-z0-9./])(\d+)\s*d(?:ay)?s?\b/);
     if (parsedMs == null && mDays)   parsedMs = now - parseInt(mDays[1])   * 86400000;
-    const mHours  = label.match(/(\d+)\s*h(?:r|our)?s?\b/);
+    const mHours  = label.match(/(?<![a-z0-9./])(\d+)\s*h(?:r|our)?s?\b/);
     if (parsedMs == null && mHours)  parsedMs = now - parseInt(mHours[1])  * 3600000;
-    const mMins   = label.match(/(\d+)\s*m(?:in|inute)?s?\b/);
+    const mMins   = label.match(/(?<![a-z0-9./])(\d+)\s*m(?:in|inute)?s?\b/);
     if (parsedMs == null && mMins)   parsedMs = now - parseInt(mMins[1])   * 60000;
     if (parsedMs == null && label.includes('yesterday')) parsedMs = now - 86400000;
     if (parsedMs == null) {

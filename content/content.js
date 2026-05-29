@@ -68,6 +68,38 @@
       stopReason:        null,   // null | 'max_dupes' | 'max_duration' | 'manual'
     };
   }
+
+  // ── DEBUG instrumentation (dev-extractor-2 only — remove before merge) ──────
+  // Traces the real save pipeline to settle "scanned ≫ saved". Logs every save
+  // (id, new vs overwrite, body snippet) and the stop reason + elapsed time, so
+  // we can SEE whether posts are lost to early-stop or to id churn.
+  var TLV_DEBUG    = true;
+  var _dbgIdSeen   = Object.create(null);  // post_id → times dispatched to save
+  function dbgSave(post, result) {
+    if (!TLV_DEBUG) return;
+    var n = (_dbgIdSeen[post.post_id] = (_dbgIdSeen[post.post_id] || 0) + 1);
+    var tag = result.is_new_record === false ? 'OVERWRITE' : (result.is_duplicate ? 'DUP-HASH' : 'NEW');
+    var hashId = (post.post_id || '').slice(0, 3) === 'h_';
+    console.log(
+      '%c[TLV-DBG ' + tag + (n > 1 ? ' ×' + n : '') + ']',
+      'color:' + (tag === 'NEW' ? '#27ae60' : '#e67e22'),
+      { id: post.post_id, hashFallback: hashId, sec: Math.round((Date.now() - state.startTime) / 1000),
+        body: (post.text || '').replace(/\s+/g, ' ').slice(0, 40) }
+    );
+  }
+  function dbgStop(reason) {
+    if (!TLV_DEBUG) return;
+    var distinct = Object.keys(_dbgIdSeen).length;
+    var hashIds  = Object.keys(_dbgIdSeen).filter(function (k) { return k.slice(0, 2) === 'h_'; }).length;
+    console.log('%c[TLV-DBG] ====== STOP: ' + reason + ' ======', 'font-weight:bold;font-size:13px;color:#c0392b');
+    console.log('  elapsedSec      :', state.startTime ? Math.round((Date.now() - state.startTime) / 1000) : 0);
+    console.log('  saveCalls       :', state.postsCaptured, '(NEW+OVERWRITE+DUP round-trips)');
+    console.log('  distinctIds     :', distinct, '(' + hashIds + ' hash-fallback, ' + (distinct - hashIds) + ' real permalink)');
+    console.log('  totalOverwrites :', state.totalOverwrites, '(same id re-dispatched — churn)');
+    console.log('  totalDuplicates :', state.totalDuplicates);
+    console.log('  scrollY/maxY    :', Math.round(window.scrollY), '/', Math.round(document.body.scrollHeight - window.innerHeight),
+                window.scrollY >= (document.body.scrollHeight - window.innerHeight - 200) ? '→ REACHED BOTTOM' : '→ STOPPED EARLY (more feed below)');
+  }
   // ──────────────────────────────────────────────────────────────────────────
 
   // ── Message listener ───────────────────────────────────────────────────────
@@ -111,6 +143,7 @@
       window.TLVScroller.stopScroll();
       state.running    = false;
       state.stopReason = 'manual';
+      dbgStop('manual');
       sendResponse({ ok: true });
       return false;
     }
@@ -153,6 +186,7 @@
             window.TLVScroller.stopScroll();
             state.running    = false;
             state.stopReason = 'max_duration';
+            dbgStop('max_duration');
             return;
           }
 
@@ -176,6 +210,7 @@
             if (!result || !result.ok) return;
 
             state.postsCaptured++;
+            dbgSave(post, result);
 
             // Three outcomes per save:
             //   1. is_duplicate  — same dedup_hash as a DIFFERENT existing post_id
@@ -212,6 +247,7 @@
               window.TLVScroller.stopScroll();
               state.running    = false;
               state.stopReason = 'max_dupes';
+              dbgStop('max_dupes');
             }
           });
         },

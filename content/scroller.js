@@ -1,40 +1,39 @@
 // content/scroller.js — Auto-scroll with MutationObserver
 //
+// === Detection v5: role="feed" child units (2026-05-29) =========================
+// Posts are detected as DIRECT CHILDREN of a role="feed" container — the unit
+// Facebook uses for one post. This is:
+//   • comment-immune — a comment is nested INSIDE its post's child, so it can
+//     never be mistaken for a separate post. (The v4 permalink-union detector
+//     keyed on /posts/ links, which ALSO match comment timestamps
+//     /posts/PID/?comment_id=… → it captured comments. That path is removed.)
+//   • anchor-independent — it does not require a data-ad-* body element, so posts
+//     whose body is a plain div[dir="auto"] are still caught.
+//   • deterministic — one child = one post, so card boundaries don't drift.
+// A legacy body-anchor path (Path 2) still covers any surface with no role="feed"
+// (or posts outside one), so behaviour is never worse than the previous build.
+// Validated on the live DOM of group 327483250942 (secrettelaviv).
+// ================================================================================
+//
 // Loaded as a plain (non-module) script before content.js.
 // Exposes window.TLVScroller = { startScroll, stopScroll }.
-//
-// Detection strategy (v3 — anchored on the permalink, not on aria attrs):
-//   1. MutationObserver fires on any childList change in document.body.
-//   2. We scan for [data-ad-preview="message"] / [data-ad-comet-preview="message"]
-//      elements — these mark the body of a real post (never a comment).
-//   3. From each text element we walk UP the DOM until we find an ancestor that
-//      contains a /posts/ or /permalink/ link. That ancestor is the smallest
-//      post-card container — it spans BOTH the post body (where we started)
-//      AND the post header (where the permalink lives), so every extractor
-//      selector will resolve correctly inside it.
-//   4. WeakSets dedupe at both the text-element and container level so each
-//      post is handed to extractPost exactly once per scrape session.
 
 window.TLVScroller = (function () {
 
-  var _scrolling       = false;
-  var _timerId         = null;
-  var _observer        = null;
-  var _seenTexts       = new WeakSet();  // text elements already kicked off
-  var _seenContainers  = new WeakSet();  // post containers already extracted
+  var _scrolling      = false;
+  var _timerId        = null;
+  var _observer       = null;
+  var _seenTexts      = new WeakSet();  // body-anchor elements already handled (Path 2)
+  var _seenContainers = new WeakSet();  // post containers already dispatched
 
-  // Selector for the post body container Facebook renders on every group post.
-  //
-  // Three rendering paths exist:
+  // Post body container Facebook renders on text posts.
   //   data-ad-preview="message"        — legacy renderer (individual group pages)
   //   data-ad-comet-preview="message"  — Comet renderer (same pages, newer build)
   //   data-ad-rendering-role="story_message" — aggregated /groups/feed/ renderer
-  //
-  // The :not(:has(…)) guard on story_message prevents double-matching cards
-  // that render BOTH a story_message wrapper AND a legacy data-ad-preview child.
-  // For those cards we anchor on the inner (more specific) legacy element;
-  // story_message is the exclusive fallback for cards that have no legacy element.
-  // Requires Chrome 105+ for :has() — all supported Chromium builds qualify.
+  // Only ~25% of posts carry one of these; the rest render the body as a plain
+  // div[dir="auto"]. Detection does NOT depend on this selector (Path 1 uses the
+  // feed-child structure). It is used to (a) quickly recognise a feed child as a
+  // post and (b) drive the legacy Path-2 walk-up.
   var POST_TEXT_SEL = [
     '[data-ad-preview="message"]',
     '[data-ad-comet-preview="message"]',
@@ -42,16 +41,7 @@ window.TLVScroller = (function () {
       ':not(:has([data-ad-preview="message"],[data-ad-comet-preview="message"]))',
   ].join(', ');
 
-  // Selector for the post's permalink link. Must cover every Facebook URL
-  // pattern the extractor knows how to derive a post_id from.
-  //   /groups/X/posts/Y       — posts inside a group page
-  //   /groups/X/permalink/Y   — older group post format
-  //   /USER/posts/Y           — posts on the home/profile feed
-  //   /permalink.php?story_fbid=…
-  //   /story.php?story_fbid=…
-  //   /share/p/Y              — shared-post URLs surfaced on the home feed
-  //   /commerce/listing/Y     — Marketplace listings cross-posted into a group
-  //   /marketplace/item/Y     — Marketplace items (alternate URL form)
+  // Post permalink link — used ONLY by the legacy Path-2 container walk-up.
   var PERMALINK_LINK_SEL = [
     'a[href*="/posts/"]',
     'a[href*="/permalink/"]',
@@ -61,76 +51,45 @@ window.TLVScroller = (function () {
     'a[href*="/videos/"]',
     'a[href*="/commerce/listing/"]',
     'a[href*="/marketplace/item/"]',
-    // Groups-feed timestamp links use ?multi_permalinks=POST_ID instead of /posts/
     'a[href*="multi_permalinks="]',
-    // Photo-album links: ?set=pcb.POST_ID — the numeric ID after pcb. IS the parent post ID.
-    // These appear on posts that attached a photo album. Note: /videos/<user>/pcb.<id>/
-    // path-style pcb references (Recommended Reels) are NOT matched here because they
-    // lack the "set=" prefix, so this selector does not re-introduce the Reels pollution.
     'a[href*="set=pcb."]',
-    // Home-feed group posts use ?set=gm.POST_ID&idorvanity=GROUP_ID on photo links.
     'a[href*="set=gm."]',
   ].join(', ');
 
-  // How many DOM levels above the text element we'll search before giving up.
-  // Home-feed posts can sit deeper than group-page posts because of the extra
-  // feed wrapper / story-card divs, so we go up to 20.
+  // Comments render inside role="article" subtrees within a post's feed-child.
+  // The post body/header is NEVER inside one (verified on group 327483250942),
+  // so anything under a role="article" is a comment and must not be treated as
+  // post content during detection or extraction.
+  var COMMENT_SEL = '[role="article"]';
+
+  // A feed child with no body anchor still counts as a post when it has a
+  // non-comment dir=auto block at least this long. Tuned so the "sort group feed
+  // by …" header (len ~34) and empty virtualisation placeholders (len 0) are
+  // skipped, while genuine short posts (≥ ~40 chars) are kept.
+  var MIN_POST_TEXT_LEN = 40;
+
+  // How many DOM levels above an element the legacy Path-2 walk-up searches.
   var MAX_WALK_UP = 20;
 
-  // Reshared / cross-posted cards nest two real posts: the outer share wrapper
-  // and the inner original post. The walk-up must be willing to climb past an
-  // ancestor containing BOTH so it can reach the layer holding the permalink.
-  // We cap at 2: if an ancestor contains 3+ distinct post-text elements we are
-  // already inside a feed-level container and must stop.
-  // Note: the :not(:has(…)) guard in POST_TEXT_SEL already collapses cards that
-  // render two elements for the SAME post into a single match, so the count
-  // returned by querySelectorAll(POST_TEXT_SEL) reflects distinct posts.
+  // Reshared cards nest two posts. Path-2 allows up to 2 post-text descendants.
   var MAX_POST_TEXT_PER_CARD = 2;
 
   // ── Core detection ────────────────────────────────────────────────────────
 
   /**
-   * Find the post-card container for a given post-body element.
-   *
-   * Strategy 1 (primary, legacy): the nearest [role="article"] ancestor. FB used
-   * to wrap every feed item in role="article", though as of mid-2026 the Groups
-   * Feed no longer does. Kept first because it's still the cheapest, most
-   * unambiguous boundary when present.
-   *
-   * Strategy 2 (current FB DOM): walk up looking for an ancestor that contains
-   * a permalink-shaped link, but bail out if we cross a boundary that holds more
-   * than MAX_POST_TEXT_PER_CARD post-text descendants — at that point we'd be
-   * looking at the feed wrapper, not a single post card. Reshared posts double
-   * the count to 2 (inner + outer copies of the same text), which we allow.
-   *
-   * Strategy 3 (fallback): if no permalink ancestor exists within MAX_WALK_UP
-   * levels (e.g. a post type where FB simply doesn't render a permalink link),
-   * return the tightest ancestor that still uniquely contained THIS post-text
-   * element. The extractor's hash-based post_id fallback can still derive a
-   * stable ID from author + content.
+   * Path 2 (legacy): find the post-card container for a body-anchor element.
+   * Used only for posts that are NOT inside a role="feed".
    */
   function getPostContainer(textEl) {
     var article = textEl.closest('[role="article"]');
     if (article) return article;
 
     var current    = textEl.parentElement;
-    var lastSingle = null; // most recent ancestor with exactly 1 post-text descendant
+    var lastSingle = null;
     for (var i = 0; i < MAX_WALK_UP && current && current !== document.body; i++) {
       var postTextCount = current.querySelectorAll(POST_TEXT_SEL).length;
       if (postTextCount === 1) lastSingle = current;
-
-      // Crossed into multi-post territory — stop here and use the best ancestor
-      // we found below this point.
       if (postTextCount > MAX_POST_TEXT_PER_CARD) return lastSingle;
-
-      // Only accept a permalink-bearing ancestor as the card boundary when it
-      // contains exactly one post-text element. If it contains two, it is a
-      // shared feed-level wrapper spanning two sibling posts — returning it
-      // would cause the second post's text element to map to the same container,
-      // which _seenContainers would then skip entirely. Fall back to lastSingle
-      // (the tightest single-text ancestor) so each post gets its own boundary.
-      // The extractor walks up 20 levels from cardEl independently, so it will
-      // still locate the permalink above this container.
       if (current.querySelector(PERMALINK_LINK_SEL)) {
         return postTextCount === 1 ? current : lastSingle;
       }
@@ -139,25 +98,32 @@ window.TLVScroller = (function () {
     return lastSingle;
   }
 
-  // ── See-more expansion ───────────────────────────────────────────────────────
-  // Facebook collapses long posts in the feed with a "See more" / "ראה עוד"
-  // button. If we extract text before expanding, we only capture the truncated
-  // preview (~250 visible characters). This function finds and clicks those
-  // buttons so the full post text is in the DOM before extraction runs.
-  //
-  // Returns true if any button was clicked (caller should wait briefly for the
-  // DOM to update before reading innerText).
+  /**
+   * Path 1: decide whether a role="feed" direct child is a post.
+   * True when it has a body anchor, or a non-comment dir=auto block long enough
+   * to be prose. Sort headers and empty placeholders return false.
+   */
+  function looksLikePost(el) {
+    if (el.querySelector(POST_TEXT_SEL)) return true;
+    var blocks = el.querySelectorAll('div[dir="auto"]');
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].closest(COMMENT_SEL)) continue;            // skip comment text
+      if ((blocks[i].innerText || '').trim().length >= MIN_POST_TEXT_LEN) return true;
+    }
+    return false;
+  }
+
+  // ── See-more expansion ────────────────────────────────────────────────────────
+  // Click "See more" / "ראה עוד" so the full post text is captured. Buttons inside
+  // comments (role="article") are skipped — we don't extract comment text.
+  // Returns true if any button was clicked (caller waits briefly for the DOM update).
   function expandSeeMore(containerEl) {
     var SEE_MORE_RE = /^(see\s+more|ראה\s+עוד|הצג\s+עוד|עוד)$/i;
     var clicked = false;
-
-    // Facebook renders the expander as a [role="button"] or a plain <div>/<span>
-    // with a tabIndex, sitting inside or adjacent to the message container.
-    var candidates = containerEl.querySelectorAll(
-      '[role="button"], [tabindex="0"]'
-    );
+    var candidates = containerEl.querySelectorAll('[role="button"], [tabindex="0"]');
     for (var i = 0; i < candidates.length; i++) {
-      var el  = candidates[i];
+      var el = candidates[i];
+      if (el.closest(COMMENT_SEL)) continue;                   // don't expand comments
       var txt = (el.innerText || el.textContent || '').trim();
       if (SEE_MORE_RE.test(txt)) {
         try { el.click(); } catch (e) {}
@@ -168,42 +134,54 @@ window.TLVScroller = (function () {
   }
 
   /**
-   * Scan the document for post-text elements, derive each one's container,
-   * and fire onNewPost() for containers we haven't seen yet.
+   * Expand "See more" if needed, then dispatch the card to onNewPost.
+   * Deferred 400 ms when expansion mutated the DOM. Shared by both paths.
+   */
+  function handleCard(card, onNewPost) {
+    if (!_scrolling) return;
+    var expanded = expandSeeMore(card);
+    if (expanded) {
+      var captured = card;
+      setTimeout(function () {
+        if (_scrolling) onNewPost(captured);
+      }, 400);
+    } else {
+      onNewPost(card);
+    }
+  }
+
+  /**
+   * Scan the document and dispatch each post card exactly once.
    *
-   * If a collapsed "See more" button is found we click it first and defer the
-   * callback by 400 ms so Facebook's synchronous (or lightly-async) DOM update
-   * has time to complete before the extractor reads innerText.
+   * Path 1 — role="feed" direct children (primary). Comment-immune and
+   *          anchor-independent; one child = one post.
+   * Path 2 — body anchors NOT inside any role="feed" (legacy safety net for
+   *          surfaces without a feed container). Comment-immune because comments
+   *          have no data-ad-* body anchor.
    */
   function processVisible(onNewPost) {
+    // Path 1 — feed children.
+    var feeds = document.querySelectorAll('[role="feed"]');
+    for (var f = 0; f < feeds.length; f++) {
+      var kids = feeds[f].children;
+      for (var c = 0; c < kids.length; c++) {
+        var child = kids[c];
+        if (_seenContainers.has(child)) continue;
+        if (!looksLikePost(child)) continue;     // header / placeholder / not yet loaded
+        _seenContainers.add(child);
+        handleCard(child, onNewPost);
+      }
+    }
+
+    // Path 2 — body anchors outside any feed container.
     document.querySelectorAll(POST_TEXT_SEL).forEach(function (textEl) {
       if (_seenTexts.has(textEl)) return;
       _seenTexts.add(textEl);
-
-      var postEl = getPostContainer(textEl);
-      if (!postEl) {
-        console.warn(
-          '[TLV Rentals] post-text element found but no usable container within ' +
-          MAX_WALK_UP + ' levels — skipping. Snippet:',
-          (textEl.innerText || '').slice(0, 80)
-        );
-        return;
-      }
-      if (_seenContainers.has(postEl)) return;
-      _seenContainers.add(postEl);
-
-      if (!_scrolling) return;
-
-      var expanded = expandSeeMore(postEl);
-      if (expanded) {
-        // Give the DOM a moment to reflect the expanded text before extracting.
-        var capturedPostEl = postEl;
-        setTimeout(function () {
-          if (_scrolling) onNewPost(capturedPostEl);
-        }, 400);
-      } else {
-        onNewPost(postEl);
-      }
+      if (textEl.closest('[role="feed"]')) return;   // already covered by Path 1
+      var card = getPostContainer(textEl);
+      if (!card || _seenContainers.has(card)) return;
+      _seenContainers.add(card);
+      handleCard(card, onNewPost);
     });
   }
 
@@ -213,15 +191,9 @@ window.TLVScroller = (function () {
     if (_scrolling) stopScroll();
     _scrolling = true;
 
-    // Reset the per-session dedup WeakSets on a fresh START_SCRAPE.
-    // This lets posts deleted from the dashboard (individually or via Delete All)
-    // be re-sent to background.js on the next scrape — their containers are no
-    // longer tracked, so processVisible will call onNewPost for them again.
-    // background.js's dedup-hash check still suppresses posts that were NOT deleted.
-    //
-    // We do NOT reset on CONTINUE_SCRAPE (resetSeen === false) because a
-    // continue should pick up from where the previous session left off without
-    // re-processing all currently-visible posts.
+    // Reset the per-session dedup WeakSets on a fresh START_SCRAPE so posts
+    // deleted from the dashboard are re-sent next scrape. We do NOT reset on
+    // CONTINUE_SCRAPE (resetSeen === false) so a continue resumes where it left off.
     if (resetSeen !== false) {
       _seenTexts      = new WeakSet();
       _seenContainers = new WeakSet();
