@@ -134,6 +134,14 @@ window.TLVExtractor = (function () {
       const prose = pickFallbackBodyText(cardEl);
       if (prose) text = prose;
     }
+    // Pure Marketplace listing card: no written post body. Its title + price live
+    // in plain divs (the div[dir="auto"] blocks are decoy "Facebook" soup), so
+    // read them from the listing attachment. Only fires when there is NO post body
+    // — a real post that merely carries a listing attachment keeps its own text.
+    if (!text) {
+      const mp = pickMarketplaceText(cardEl);
+      if (mp) text = mp;
+    }
 
     // Author link. On the aggregated /groups/feed/, the cardEl that scroller
     // returns is often narrow (the body/image scope) and excludes the post
@@ -169,10 +177,21 @@ window.TLVExtractor = (function () {
     // author+text hash id below. On surfaces with no role="feed" (legacy Path-2),
     // _feedEl is null and the walk-up behaves exactly as before.
     var _feedEl = cardEl.closest('[role="feed"]');
+    // Author-count boundary. On surfaces with NO role="feed" (e.g.
+    // /?filter=all&sk=h_chr — the user's primary surface) the feed guard below
+    // never fires, so the walk-up used to run unbounded and a post with no own
+    // permalink (a background/photo post) would climb into a NEIGHBOUR and steal
+    // its /posts/ or /commerce/ id, overwriting a real listing in IDB (confirmed
+    // live: a sublet stole a drawers-listing id; a Shlomtzion apartment was lost).
+    // The post author appears once per card, so stop widening as soon as a 2nd
+    // author link enters scope = a neighbour. Validated: pure no-op on settled DOM
+    // except where it prevents a steal.
+    var _authorsInCard = cardEl.querySelectorAll(SEL.authorLink).length;
     if (!permalinkEl) {
       let ancestor = cardEl.parentElement;
       for (var _i = 0; _i < 20 && ancestor && ancestor !== document.body; _i++) {
         if (_feedEl && ancestor.contains(_feedEl)) break;  // reached/passed the feed → stop
+        if (ancestor.querySelectorAll(SEL.authorLink).length > Math.max(1, _authorsInCard)) break;
         permalinkEl = pickPermalink(ancestor, pageGroupId);
         if (permalinkEl) break;
         ancestor = ancestor.parentElement;
@@ -488,6 +507,42 @@ window.TLVExtractor = (function () {
       if (t.length > bestLen) { bestLen = t.length; best = t; }
     }
     return best || bestAny;
+  }
+
+  // Read the title + price of a pure Marketplace listing card (a /commerce/listing/
+  // or /marketplace/item/ attachment with no written post body). Verified live on
+  // cl_26781735978149210: the title and "price · location" sit in plain <div>s,
+  // while every div[dir="auto"] is CSS-scrambled decoy ("Facebook" repeated), so
+  // the normal text paths return nothing. Walk up to the largest ancestor that
+  // still excludes the post author/header, then collect each <div>'s DIRECT text
+  // nodes, skipping the decoy token and UI chrome.
+  function pickMarketplaceText(cardEl) {
+    const link = cardEl.querySelector('a[href*="/commerce/listing/"], a[href*="/marketplace/item/"]');
+    if (!link) return '';
+    let scope = link;
+    let el = link.parentElement;
+    for (let i = 0; i < 12 && el && el !== document.body; i++) {
+      if (el.querySelector('a[href*="/user/"]')) break;  // would include the author header
+      scope = el;
+      el = el.parentElement;
+    }
+    const SKIP = /^(message|see more|see less|write a public|send|שלח הודעה|פרסום|ראה עוד)/i;
+    const parts = [];
+    const divs = scope.querySelectorAll('div');
+    for (let j = 0; j < divs.length; j++) {
+      let direct = '';
+      const kids = divs[j].childNodes;
+      for (let k = 0; k < kids.length; k++) {
+        if (kids[k].nodeType === 3) direct += kids[k].textContent;
+      }
+      direct = direct.replace(/\s+/g, ' ').trim();
+      if (direct.length >= 3 && direct !== 'Facebook' && !SKIP.test(direct)) {
+        parts.push(direct);
+      }
+    }
+    if (parts.length) return parts.join(' · ');
+    const flat = (scope.innerText || '').replace(/\s+/g, ' ').trim();
+    return flat && flat !== 'Facebook' ? flat : '';
   }
 
   // Pick the post author's profile link. Facebook renders 2–3 anchors to the same

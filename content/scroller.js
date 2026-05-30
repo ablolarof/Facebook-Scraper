@@ -25,6 +25,7 @@ window.TLVScroller = (function () {
   var _observer       = null;
   var _seenTexts      = new WeakSet();  // body-anchor elements already handled (Path 2)
   var _seenContainers = new WeakSet();  // post containers already dispatched
+  var _seenLinks      = new WeakSet();  // commerce links already resolved to a card (Path 3)
 
   // Post body container Facebook renders on text posts.
   //   data-ad-preview="message"        — legacy renderer (individual group pages)
@@ -62,6 +63,14 @@ window.TLVScroller = (function () {
   // post content during detection or extraction.
   var COMMENT_SEL = '[role="article"]';
 
+  // Pure Marketplace listing cards (a /commerce/listing/ or /marketplace/item/
+  // attachment with NO written post body) carry their title+price in plain divs,
+  // not in a data-ad-* anchor or a dir=auto block — so the text-based checks below
+  // miss them. We detect them on the commerce link instead. Cards that DO have a
+  // post body are already caught by the text checks; this only adds the bodyless
+  // listing cards. Extraction reads the title via extractor.js pickMarketplaceText.
+  var COMMERCE_SEL = 'a[href*="/commerce/listing/"], a[href*="/marketplace/item/"]';
+
   // A feed child with no body anchor still counts as a post when it has a
   // non-comment dir=auto block at least this long. Tuned so the "sort group feed
   // by …" header (len ~34) and empty virtualisation placeholders (len 0) are
@@ -98,6 +107,27 @@ window.TLVScroller = (function () {
     return lastSingle;
   }
 
+  // Author profile link — used by Path 3 to bound a Marketplace card.
+  var AUTHOR_SEL = 'a[href*="/user/"]';
+
+  /**
+   * Path 3: resolve a pure-Marketplace card from its commerce link, on surfaces
+   * with NO role="feed" (e.g. /?filter=all&sk=h_chr — the user's primary surface).
+   * Bound by author count: walk up while the scope holds at most one author link;
+   * stop before a 2nd author (= a neighbouring post) enters scope. Validated live
+   * on /?filter=all&sk=h_chr: over-captured (>1 id or >1 author) = 0.
+   */
+  function getCardFromCommerce(linkEl) {
+    var el   = linkEl.parentElement;
+    var best = el;
+    for (var i = 0; i < MAX_WALK_UP && el && el !== document.body; i++) {
+      if (el.querySelectorAll(AUTHOR_SEL).length > 1) break;   // neighbour entered scope
+      best = el;
+      el = el.parentElement;
+    }
+    return best;
+  }
+
   /**
    * Path 1: decide whether a role="feed" direct child is a post.
    * True when it has a body anchor, or a non-comment dir=auto block long enough
@@ -105,6 +135,7 @@ window.TLVScroller = (function () {
    */
   function looksLikePost(el) {
     if (el.querySelector(POST_TEXT_SEL)) return true;
+    if (el.querySelector(COMMERCE_SEL)) return true;   // pure Marketplace listing card
     var blocks = el.querySelectorAll('div[dir="auto"]');
     for (var i = 0; i < blocks.length; i++) {
       if (blocks[i].closest(COMMENT_SEL)) continue;            // skip comment text
@@ -158,6 +189,10 @@ window.TLVScroller = (function () {
    * Path 2 — body anchors NOT inside any role="feed" (legacy safety net for
    *          surfaces without a feed container). Comment-immune because comments
    *          have no data-ad-* body anchor.
+   * Path 3 — commerce links, for PURE Marketplace listing cards (no body anchor,
+   *          no feed child). Catches listings on /?filter=all&sk=h_chr that Paths
+   *          1-2 cannot see. Runs last so a card already taken by Path 1/2 (a text
+   *          post that merely carries a listing attachment) is skipped.
    */
   function processVisible(onNewPost) {
     // Path 1 — feed children.
@@ -183,6 +218,21 @@ window.TLVScroller = (function () {
       _seenContainers.add(card);
       handleCard(card, onNewPost);
     });
+
+    // Path 3 — pure Marketplace listing cards (commerce link, no body anchor).
+    document.querySelectorAll(COMMERCE_SEL).forEach(function (linkEl) {
+      if (_seenLinks.has(linkEl)) return;
+      _seenLinks.add(linkEl);
+      if (linkEl.closest('[role="article"]')) return;   // a comment's attachment, not a post
+      var card = getCardFromCommerce(linkEl);
+      if (!card || _seenContainers.has(card)) return;
+      // A card WITH a body anchor is a written post that happens to carry a
+      // listing — Path 1/2 already handled (or will handle) it. Path 3 is only
+      // for bodyless listing cards.
+      if (card.querySelector(POST_TEXT_SEL)) return;
+      _seenContainers.add(card);
+      handleCard(card, onNewPost);
+    });
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -197,6 +247,7 @@ window.TLVScroller = (function () {
     if (resetSeen !== false) {
       _seenTexts      = new WeakSet();
       _seenContainers = new WeakSet();
+      _seenLinks      = new WeakSet();
     }
 
     var onNewPost = callbacks.onNewPost;
