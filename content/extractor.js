@@ -384,14 +384,24 @@ window.TLVExtractor = (function () {
     }
 
     if (!permalinkEl && !post_id) {
-      // No usable permalink and no comment-recoverable id — hash author + first
-      // 200 chars of text so the same post yields the same post_id on subsequent
-      // scrapes (dedup).
+      // No usable permalink and no comment-recoverable id — hash the post's
+      // identity so the same post yields the same post_id on subsequent scrapes
+      // (dedup). Use the FULL text, whitespace-normalized — NOT text.slice(0,200):
+      // anonymous posts have no author, so two DIFFERENT anonymous posts sharing a
+      // 200-char prefix (e.g. templated agency "דרושה עזרה…" posts whose only
+      // distinguishing detail is a phone number after char 200) would hash
+      // identically and silently overwrite each other. Hashing the full text can
+      // only SPLIT a false merge, never wrongly merge identical content. This
+      // mirrors lib/dedup.js::normalise (full text, whitespace-collapsed), which
+      // already depends on cross-scrape text stability — so no new assumption is
+      // introduced. Normalizing whitespace prevents trivial drift between scrapes
+      // from splitting one post into two rows.
       if (!text && !author_name) {
         console.warn('[TLV Rentals] Skipping card with neither permalink nor content');
         return null;
       }
-      post_id   = 'h_' + hashString(author_name + '|' + text.slice(0, 200));
+      const _idText = (text || '').replace(/\s+/g, ' ').trim();
+      post_id   = 'h_' + hashString(author_name + '|' + _idText);
       permalink = '';   // leave blank so dashboard shows a disabled Open button
       posted_at = findPostedAt(cardEl, null) || new Date().toISOString();
 
