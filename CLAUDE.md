@@ -26,8 +26,31 @@ These stages are sequential.
 1. **Drop Gemini entirely — regex-only pipeline** (complete as of 2026-05-26). `lib/gemini.js` deleted; `host_permissions` no longer mentions `generativelanguage.googleapis.com`; popup has no settings panel; dashboard has no "Classify & Tag" button. Classification is now `lib/regex_extractor.js` only, called inline from `background.js` on every `SAVE_POST`. Existing Gemini-extracted tags in IDB were left in place — no migration.
 2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss and record *why* the correct answer is correct. The "why" is the training signal — the user batches these and pastes them to Claude, who updates `lib/regex_extractor.js` rules accordingly.
 3. **Fix the Open button.** (Complete as of 2026-05-28.) Canonical permalink construction now works across all Facebook URL patterns: `/posts/`, `/permalink/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `/commerce/listing/`, and `/marketplace/item/`. The extractor walks up to 8 DOM levels to locate the group ID when the card container is too narrow to contain the author link.
-4. **Improve duplicate detection.** Current dedup is SHA-256 of normalised text + first image URL. Many cross-posted listings with slightly different wording slip through.
-5. **Fix the group-name capture bug.** Some group names come through truncated.
+4. **Missing-posts capture overhaul** (complete as of 2026-05-30, v1.2.0). See the dedicated section below. Detection rewritten to `role="feed"` child units; neighbour-ID theft fixed; pure Marketplace cards captured; anonymous-post hashing hardened.
+5. **Improve duplicate detection.** Current dedup is SHA-256 of normalised text + first image URL. Many cross-posted listings with slightly different wording slip through.
+6. **Fix the group-name capture bug.** Some group names come through truncated.
+
+## Post detection (v1.2.0 overhaul)
+
+Detection (`content/scroller.js → processVisible`) runs three paths, each dispatching a card to the extractor exactly once:
+
+- **Path 1 — `role="feed"` children.** The primary detector. Each direct child of a `role="feed"` container is one post. Comment-immune (a comment is a `role="article"` *inside* the card, never its own child) and anchor-independent (works whether or not the post has a `data-ad-*` body anchor). A child counts as a post if it has a body anchor, a `/commerce/listing/` link, or a non-comment `div[dir="auto"]` ≥ 40 chars (skips the "sort feed" header and empty virtualisation placeholders).
+- **Path 2 — body anchors outside any `role="feed"`.** Legacy fallback for surfaces with no feed container.
+- **Path 3 — commerce links (pure Marketplace cards).** Catches Marketplace listing cards that have no body anchor at all. The card is bounded by author count (walk up while ≤ 1 author link; a 2nd author = a neighbour). Skipped if the card has a body anchor (then it's a written post, handled by Path 1/2).
+
+**Why `/?filter=all&sk=h_chr` matters.** This personalised home feed (all the user's groups, chronological) is the primary scraping surface and has **no `role="feed"` container** — Path 1 never fires there, so Paths 2 and 3 carry it. Any change to detection must be checked on this surface, not just on a single `/groups/<id>/` page.
+
+### Extraction guardrails
+
+- **Comment-safe.** Author (`pickAuthorLink`), text fallback (`pickFallbackBodyText`), and images all exclude `role="article"` (comment) subtrees. `pickAuthorLink` also skips the empty avatar-wrapper `/user/` link so `author_name` isn't blank.
+- **Pure-Marketplace text** (`pickMarketplaceText`). A listing card's `div[dir="auto"]` blocks are CSS-scrambled decoy ("Facebook" repeated); the real title/price live in plain `<div>`s. The function scopes to the largest ancestor excluding the author header and reads direct text nodes. Only fires when the post has no written body.
+- **Neighbour-ID theft guard.** The permalink walk-up in `extractPost` is bounded twice: it never ascends into the `role="feed"` container, AND it stops when a 2nd author link enters scope. Without this, a permalink-less post (anonymous / background / commentless) on a no-`role=feed` surface climbs into an adjacent card, steals its `/posts/` or `/commerce/` ID, and silently overwrites that real post in IDB. Confirmed live: a sublet stole a furniture-listing ID; an apartment was lost.
+- **Comment-link permalink recovery** (`pickPostIdFromComments`). When a post has no own permalink, the parent post ID is read (read-only) from the mode of its comments' `/posts/<id>?comment_id=` hrefs.
+- **Permalink-less post ID = full-text hash.** When there's no permalink and no comment-recoverable ID, `post_id = h_<hash(author + '|' + full normalised text)>`. Full text (not `text.slice(0,200)`) because anonymous posts share a blank author — two different anonymous posts with the same 200-char prefix would otherwise collide and overwrite. Mirrors `lib/dedup.js::normalise`.
+
+### Debug instrumentation (present in v1.2.0)
+
+`content/content.js` carries a `TLV_DEBUG` block (`dbgSave`/`dbgStop`) that logs every save (`NEW` / `OVERWRITE` / `DUP-HASH`, id, body snippet) and a stop summary (distinct ids, overwrites, `REACHED BOTTOM` vs `STOPPED EARLY`). Console-only, no behaviour change. Intentionally retained for now; gate or remove (`TLV_DEBUG = false`) when diagnosing is no longer needed.
 
 ## Architecture
 
@@ -84,8 +107,10 @@ The extractor (`content/extractor.js`) handles these URL shapes in priority orde
 | `?multi_permalinks=PID` | Aggregated `/groups/feed/` timestamp links | `multi_permalinks` query param |
 | `?set=pcb.PID` | Photo-album image links on `/groups/feed/` | numeric ID after `pcb.` |
 | `?set=gm.PID&idorvanity=GID` | Photo-album links on the home feed | numeric ID after `gm.`; `idorvanity` gives GID directly |
-| `/commerce/listing/PID` | Marketplace cross-posts | path segment after `/commerce/listing/` |
-| `/marketplace/item/PID` | Marketplace alternate URL | path segment after `/marketplace/item/` |
+| `/commerce/listing/PID` | Marketplace cross-posts & pure listing cards | path segment after `/commerce/listing/`, prefixed `cl_` |
+| `/marketplace/item/PID` | Marketplace alternate URL | path segment after `/marketplace/item/`, prefixed `mp_` |
+| *(none — comment recovery)* | Post with comments but no own permalink | mode of comments' `/posts/<id>?comment_id=` hrefs (`pickPostIdFromComments`) |
+| *(none — hash fallback)* | Anonymous / background / commentless posts (no permalink anywhere) | `h_<hash(author + '|' + full normalised text)>`; Open button disabled |
 
 **`/groups/feed/` and home-feed DOM quirk (important).** On both the aggregated groups feed and the home feed, Facebook renders *zero* `/posts/` URLs inside a post's card container. The only post-ID signal is on photo image links:
 
@@ -104,7 +129,12 @@ The group ID must be read from one of: `idorvanity` query param (home feed, easi
 
 ### Deduplication strategy
 
-Posts are deduplicated by content hash (text + first image URL). Cross-group reposts of the same listing inherit the original's classification. Stage 4 will replace this with a fuzzier signal.
+Two independent mechanisms:
+
+- **`post_id`** is the IndexedDB primary key. Derived from the permalink when one exists; otherwise comment-recovered or a full-text hash (see the URL-patterns table). Two saves with the same `post_id` overwrite — this is how the same post re-scraped, or the same listing cross-posted to many groups (identical `cl_` id), collapses to one row.
+- **`dedup_hash`** (`lib/dedup.js`, SHA-256 of normalised text + first image URL) catches cross-group reposts that have *different* post_ids but identical content; the duplicate inherits the original's classification.
+
+Stage 5 will replace `dedup_hash` with a fuzzier signal (near-duplicate cross-posts with slightly different wording still slip through).
 
 ### Classification (regex only)
 

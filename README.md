@@ -12,7 +12,11 @@
 - **Local-only classification** — every captured post runs through `lib/regex_extractor.js`, a Hebrew/English regex pass that catches `להשכרה`, `שכירות`, `for rent`, monthly-price patterns, and the inverse (`למכירה`, `for sale`). There is no remote API in the loop. Posts the regex can't classify with confidence stay unlabeled until a human handles them.
 - **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), entry date, whether it's a roommate listing, and whether a broker fee applies.
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
-- **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`).
+- **Structural post detection** — posts are detected as `role="feed"` child units (with body-anchor and commerce-link fallbacks for surfaces that don't use a feed container, such as `/?filter=all&sk=h_chr`). This catches posts whether or not they have a `data-ad-*` body anchor, and is comment-immune: a comment lives inside its post's card and can never be mistaken for a separate post.
+- **Marketplace cross-posts** — Marketplace listings (`/commerce/listing/`, `/marketplace/item/`) that appear in groups are captured too, with their own post-ID prefixes (`cl_…`, `mp_…`). Pure Marketplace listing cards (a listing with no written prose) are captured as well — their title and price are read directly from the listing attachment.
+- **Comment-safe extraction** — author, body text, and images are all read from the post itself, never from its comments. Empty avatar-wrapper links are skipped so the real author name is captured.
+- **Comment-link permalink recovery** — when a post has no permalink of its own, the parent post ID is recovered (read-only, no clicking) from the timestamp links of its rendered comments.
+- **Anonymous & permalink-less posts** — anonymous posts, and posts whose URL Facebook only builds on click, are still captured (with a disabled Open button). Their post ID is a hash of the full normalised post text, so two different anonymous posts can't overwrite each other.
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
 - **Canonical Open links** — every post's Open button resolves to the correct canonical Facebook URL across all URL patterns: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `?set=gm.POST_ID` (home-feed group posts), `/commerce/listing/`, and `/marketplace/item/`.
 - **Works on the home feed too** — group posts surfaced in the personal home feed are captured with proper post IDs and group context, not just the aggregated `/groups/feed/` view.
@@ -125,8 +129,13 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 
 1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
 2. ~~**Fix the Open button.**~~ ✅ Done (v1.1.5) — canonical URLs now work for all Facebook URL patterns across group pages, the aggregated groups feed, and the personal home feed: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID`, `?set=gm.POST_ID`, `/commerce/listing/`, `/marketplace/item/`. Includes guard against reused-image pcb/gm IDs shadowing the real post ID.
-3. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
-4. **Fix the group-name capture bug.** Some group names come through truncated.
+3. ~~**Missing-posts capture overhaul.**~~ ✅ Done (v1.2.0) — detection rewritten to `role="feed"` child units with body-anchor and commerce-link fallbacks; fixed neighbour-ID theft (a permalink-less post stealing an adjacent post's ID and overwriting it); pure Marketplace listing cards now captured; anonymous posts hashed on full text to prevent overwrites.
+4. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
+5. **Fix the group-name capture bug.** Some group names come through truncated.
+
+### Known limitations
+
+- **Open button on click-only posts** — anonymous, background-colour, and zero/collapsed-comment posts expose no permalink in the DOM (Facebook builds the URL only on click). They are captured with full text, but the Open button is disabled. A click-based permalink resolver is a possible future enhancement.
 
 ---
 

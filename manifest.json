@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "TLV Rental [Dev - Extractor 2]",
-  "version": "1.1.5",
+  "name": "TLV Rentals",
+  "version": "1.2.0",
   "description": "Scrape and track Tel Aviv apartment rental listings from Facebook groups",
 
   "permissions": ["storage", "tabs"],
