@@ -1,6 +1,6 @@
 # Tel Aviv Facebook Rental Scraper
 
-> A Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental listings from Facebook groups, classifies them with a local regex pipeline, and presents them in a filterable dashboard — so you can actually find a flat without drowning in posts.
+> A Manifest V3 Chrome extension that scrapes posts from Facebook groups, this is a POC and is to only be used at the users own risk and discretion.
 >
 > Vibe-coded with Claude (https://claude.ai) by Anthropic.
 
