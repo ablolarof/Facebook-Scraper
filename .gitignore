@@ -25,6 +25,9 @@ yarn.lock
 *.key
 *.pem
 
+# ── Local documentation ────────────────────────────────────────────────────
+# (docs/ is now tracked — scraping report published to the repo)
+
 # ── Scratch / exported data ────────────────────────────────────────────────
 # The dashboard's "Export JSON" button downloads files matching this pattern.
 tlv-rentals-*.json
