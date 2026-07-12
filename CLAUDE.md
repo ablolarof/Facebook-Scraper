@@ -27,7 +27,7 @@ These stages are sequential.
 2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss and record *why* the correct answer is correct. The "why" is the training signal — the user batches these and pastes them to Claude, who updates `lib/regex_extractor.js` rules accordingly.
 3. **Fix the Open button.** (Complete as of 2026-05-28.) Canonical permalink construction now works across all Facebook URL patterns: `/posts/`, `/permalink/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `/commerce/listing/`, and `/marketplace/item/`. The extractor walks up to 8 DOM levels to locate the group ID when the card container is too narrow to contain the author link.
 4. **Missing-posts capture overhaul** (complete as of 2026-05-30, v1.2.0). See the dedicated section below. Detection rewritten to `role="feed"` child units; neighbour-ID theft fixed; pure Marketplace cards captured; anonymous-post hashing hardened.
-5. **Improve duplicate detection.** Current dedup is SHA-256 of normalised text + first image URL. Many cross-posted listings with slightly different wording slip through.
+5. ~~**Improve duplicate detection.**~~ (Complete as of 2026-07-12, v1.4.0.) Two-layer dedup: exact SHA-256 match (unchanged) plus a `prefix_key` index on the first 10 normalised words (`lib/dedup.js::computePrefixKey`). `findByPrefixKey` in `lib/db.js` does an O(1) IDB index lookup after the exact-hash check fails. Catches cross-posted listings edited before reposting (different phone, emoji, small price change). DB schema bumped to v2 to add the `prefix_key` index; `onupgradeneeded` handles the v1→v2 migration automatically.
 6. **Fix the group-name capture bug.** Some group names come through truncated.
 
 ## Post detection (v1.2.0 overhaul)
@@ -123,18 +123,17 @@ The group ID must be read from one of: `idorvanity` query param (home feed, easi
 
 ### Deletion and re-scraping
 
-- **Individual delete** — `db.js::deletePost(id)` removes by primary key. The `_seenContainers` WeakSet in `scroller.js` is in-memory and session-scoped, so deleted posts are re-sent to `background.js` on the next fresh scrape (START_SCRAPE resets both WeakSets). The background dedup check (`findByDedupHash`) only blocks posts still in IndexedDB.
+- **Individual delete** — `db.js::deletePost(id)` removes by primary key. The `_seenContainers` WeakSet in `scroller.js` is in-memory and session-scoped, so deleted posts are re-sent to `background.js` on the next fresh scrape (START_SCRAPE resets both WeakSets). The background dedup checks (`findByDedupHash`, `findByPrefixKey`) only block posts still in IndexedDB.
 - **Delete All** — `db.js::clearAllPosts()` calls `IDBObjectStore.clear()`. Dashboard has a "🗑 Delete All" button (requires typed confirmation + post-count display). After clearing, the next scrape re-captures everything from scratch.
 - **CONTINUE_SCRAPE** does **not** reset the WeakSets — it picks up exactly where the previous session left off, intentionally skipping already-seen containers.
 
 ### Deduplication strategy
 
-Two independent mechanisms:
+Three independent mechanisms, checked in order on every `SAVE_POST`:
 
 - **`post_id`** is the IndexedDB primary key. Derived from the permalink when one exists; otherwise comment-recovered or a full-text hash (see the URL-patterns table). Two saves with the same `post_id` overwrite — this is how the same post re-scraped, or the same listing cross-posted to many groups (identical `cl_` id), collapses to one row.
 - **`dedup_hash`** (`lib/dedup.js`, SHA-256 of normalised text + first image URL) catches cross-group reposts that have *different* post_ids but identical content; the duplicate inherits the original's classification.
-
-Stage 5 will replace `dedup_hash` with a fuzzier signal (near-duplicate cross-posts with slightly different wording still slip through).
+- **`prefix_key`** (`lib/dedup.js::computePrefixKey`, first 10 normalised words joined by spaces) catches near-duplicates — the same listing reposted with minor edits (different phone number, added emoji, small price change). Stored as a field on each post and indexed in IDB (v2 schema); `findByPrefixKey` does an O(1) lookup after the exact `dedup_hash` check misses.
 
 ### Classification (regex only)
 
