@@ -14,8 +14,8 @@
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard.
 
-import { savePost, findByDedupHash, countPosts, getPost } from './lib/db.js';
-import { computeDedupHash } from './lib/dedup.js';
+import { savePost, findByDedupHash, findByPrefixKey, countPosts, getPost } from './lib/db.js';
+import { computeDedupHash, computePrefixKey } from './lib/dedup.js';
 import { regexClassifyPost, regexExtractTags, mergeWithRegex }
   from './lib/regex_extractor.js';
 
@@ -62,6 +62,7 @@ async function handleSavePost(post) {
     const wasNewRecord = !(await getPost(post.post_id));
 
     post.dedup_hash       = dedupHash;
+    post.prefix_key       = computePrefixKey(post.text || '');  // null for very short posts
     post.human_label      = post.human_label      ?? null;
     post.ai_label         = post.ai_label         ?? null;
     post.ai_classified_at = post.ai_classified_at ?? null;
@@ -94,6 +95,23 @@ async function handleSavePost(post) {
     } else {
       post.is_duplicate = false;
       post.duplicate_of = null;
+    }
+
+    // ── Prefix-key near-duplicate check ──────────────────────────────────────
+    // Runs only when the exact dedup_hash didn't fire AND the text has enough
+    // words for a meaningful prefix (computePrefixKey returns null otherwise).
+    // If any stored post opens with the same first 10 words, this is almost
+    // certainly the same listing reposted with minor edits.
+    if (!post.is_duplicate && post.prefix_key) {
+      const prefixMatch = await findByPrefixKey(post.prefix_key);
+      if (prefixMatch && prefixMatch.post_id !== post.post_id) {
+        console.log(`[TLV Rentals] Prefix duplicate: ${post.post_id} → ${prefixMatch.post_id}`);
+        post.is_duplicate    = true;
+        post.duplicate_of    = prefixMatch.post_id;
+        post.ai_label         = prefixMatch.ai_label         ?? null;
+        post.ai_classified_at = prefixMatch.ai_classified_at ?? null;
+        post.ai_classified_by = prefixMatch.ai_classified_by ?? null;
+      }
     }
 
     // Run regex classification + tag extraction inline (no API, no rate limit).

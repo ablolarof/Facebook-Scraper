@@ -22,7 +22,7 @@
 - **Works on the home feed too** — group posts surfaced in the personal home feed are captured with proper post IDs and group context, not just the aggregated `/groups/feed/` view.
 - **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
 - **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB.
-- **Deduplication** — posts are fingerprinted on save (SHA-256 of normalised text + first image URL). A duplicate inherits the original's classification so we don't redo work on identical content.
+- **Two-layer deduplication** — exact duplicates are caught by SHA-256 of normalised text + first image URL. Near-duplicates (same listing reposted with minor edits — different phone number, added emoji, small price change) are caught by a prefix-key match on the first 10 normalised words. A duplicate inherits the original's classification so we don't redo work on the same content.
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
 - **Permanent delete** — a trash button on each card removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
 - **Delete All** — wipes the entire database so the next scrape starts from a clean slate. Requires explicit confirmation in the dashboard (shows the current post count before you confirm).
@@ -114,7 +114,7 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 │   └── dashboard.css
 ├── lib/
 │   ├── db.js                           # IndexedDB wrapper
-│   ├── dedup.js                        # SHA-256 of normalised text + first image URL
+│   ├── dedup.js                        # SHA-256 exact hash + first-10-word prefix key
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 
 ├── icons/                              # 16/48/128 PNG icons
@@ -130,7 +130,7 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
 2. ~~**Fix the Open button.**~~ ✅ Done (v1.1.5) — canonical URLs now work for all Facebook URL patterns across group pages, the aggregated groups feed, and the personal home feed: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID`, `?set=gm.POST_ID`, `/commerce/listing/`, `/marketplace/item/`. Includes guard against reused-image pcb/gm IDs shadowing the real post ID.
 3. ~~**Missing-posts capture overhaul.**~~ ✅ Done (v1.2.0) — detection rewritten to `role="feed"` child units with body-anchor and commerce-link fallbacks; fixed neighbour-ID theft (a permalink-less post stealing an adjacent post's ID and overwriting it); pure Marketplace listing cards now captured; anonymous posts hashed on full text to prevent overwrites.
-4. **Improve duplicate detection.** Fuzzier signal than text+image SHA-256.
+4. ~~**Improve duplicate detection.**~~ ✅ Done (v1.4.0) — two-layer dedup: exact SHA-256 match plus prefix-key matching on the first 10 normalised words. Catches cross-posted listings edited before reposting (different phone, emoji, price tweak).
 5. **Fix the group-name capture bug.** Some group names come through truncated.
 
 ### Known limitations
