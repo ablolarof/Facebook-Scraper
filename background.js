@@ -18,6 +18,22 @@ import { savePost, findByDedupHash, findByPrefixKey, countPosts, getPost } from 
 import { computeDedupHash, computePrefixKey } from './lib/dedup.js';
 import { regexClassifyPost, regexExtractTags, mergeWithRegex }
   from './lib/regex_extractor.js';
+import { getNotifySettings, sendTelegram, formatPostMessage, matchesPreferences }
+  from './lib/notify.js';
+import { pollBot } from './lib/bot.js';
+
+// ── Telegram bot command polling (stage 7d) ──────────────────────────────────
+// A 30-second alarm wakes the worker to check for bot commands; pollBot()
+// switches to long-poll bursts while a conversation is active. Registered at
+// top level so every worker start re-registers it (chrome.alarms.create with
+// the same name just resets the timer — idempotent). The immediate call makes
+// queued commands apply as soon as the worker wakes — i.e. before the next
+// hourly scrape starts saving posts.
+chrome.alarms.create('tlv-bot-poll', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === 'tlv-bot-poll') pollBot();
+});
+pollBot();
 
 // ── One-time cleanup of legacy Gemini storage keys ───────────────────────────
 // The Gemini era stored these in chrome.storage.local; the regex-only pipeline
@@ -59,7 +75,16 @@ async function handleSavePost(post) {
     // uses this to distinguish "truly new" from "we already had this one" —
     // important on the home feed where the same post can reappear in the feed
     // and any hash-fallback collision would silently overwrite an existing row.
-    const wasNewRecord = !(await getPost(post.post_id));
+    const existingRecord = await getPost(post.post_id);
+    const wasNewRecord   = !existingRecord;
+
+    // An overwrite replaces the row wholesale, so the notification stamps
+    // must be carried over or a re-scrape would erase the record of having
+    // already alerted the user about this post.
+    if (existingRecord) {
+      post.notified_at      = existingRecord.notified_at      ?? null;
+      post.notify_failed_at = existingRecord.notify_failed_at ?? null;
+    }
 
     post.dedup_hash       = dedupHash;
     post.prefix_key       = computePrefixKey(post.text || '');  // null for very short posts
@@ -136,11 +161,51 @@ async function handleSavePost(post) {
     }
 
     await savePost(post);
+
+    // Telegram notification check. Never lets an error propagate into the
+    // save result — the post is already safely stored at this point.
+    try {
+      await notifyIfMatch(post, wasNewRecord);
+    } catch (err) {
+      console.warn('[TLV Rentals] Notification check failed:', err);
+    }
+
     return { ok: true, is_duplicate: post.is_duplicate, is_new_record: wasNewRecord };
 
   } catch (err) {
     console.error('[TLV Rentals] Error saving post:', err);
     return { ok: false, error: String(err) };
   }
+}
+
+// ── Telegram notification on matching new posts (stage 7c) ──────────────────
+// Sends at most one alert per post, ever:
+//   - Only posts seen for the FIRST time qualify (wasNewRecord), so the
+//     existing backlog never floods the chat on a re-scrape — with one
+//     exception: a row whose previous send attempt failed (notify_failed_at
+//     set, notified_at not) is retried when the next scrape re-saves it.
+//   - Duplicates (hash or prefix) inherit their original's outcome and are
+//     never alerted separately.
+//   - notified_at / notify_failed_at are stamped on the post row itself and
+//     preserved across overwrites in handleSavePost.
+async function notifyIfMatch(post, wasNewRecord) {
+  if (post.is_duplicate || post.notified_at) return;
+  if (!wasNewRecord && !post.notify_failed_at) return;
+
+  const s = await getNotifySettings();
+  if (!s.enabled || !s.bot_token || !s.chat_id) return;
+  if (!matchesPreferences(post, s)) return;
+
+  try {
+    await sendTelegram(s.bot_token, s.chat_id, formatPostMessage(post));
+    post.notified_at      = new Date().toISOString();
+    post.notify_failed_at = null;
+    console.log(`[TLV Rentals] Notified: ${post.post_id}`);
+  } catch (err) {
+    // Stamp the failure so the next scrape of this same post retries the send.
+    post.notify_failed_at = new Date().toISOString();
+    console.warn(`[TLV Rentals] Notification send failed for ${post.post_id}:`, err);
+  }
+  await savePost(post);
 }
 

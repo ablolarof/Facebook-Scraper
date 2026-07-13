@@ -1,6 +1,6 @@
 # Tel Aviv Facebook Rental Scraper
 
-> A Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental listings from Facebook groups, classifies them with a local regex pipeline, and presents them in a filterable dashboard — so you can actually find a flat without drowning in posts.
+> A Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental listings from Facebook groups, classifies them with a local regex pipeline, presents them in a filterable dashboard, and (since v2.0.0) pings your phone through your own Telegram bot the moment a new listing matches your preferences — so you can actually find a flat without drowning in posts.
 >
 > Vibe-coded with Claude (https://claude.ai) by Anthropic.
 
@@ -26,6 +26,8 @@
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
 - **Permanent delete** — a trash button on each card removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
 - **Delete All** — wipes the entire database so the next scrape starts from a clean slate. Requires explicit confirmation in the dashboard (shows the current post count before you confirm).
+- **Telegram notifications (v2.0.0)** — get an alert on your phone when a scrape captures a **new** post matching your preferences: max price, rooms range, whole-apartment vs. roommates, broker fee, and include/exclude keyword lists (the only location filter — e.g. neighborhood names in Hebrew or English). Matching is recall-biased: a post whose price or rooms could not be extracted is never excluded by that rule. One message per matching post, with price/rooms/size, group name, a text snippet, and the permalink. Duplicates and re-scrapes never re-notify; a failed send retries on the next scrape.
+- **Control the bot from your phone (v2.0.0)** — the bot itself is a control surface: `/start` runs a 6-question setup wizard in the chat, `/reset` clears preferences and starts over, `/status` shows current settings, `/on` `/off` toggle alerts. The first chat to `/start` an unbound bot becomes its owner; every other chat is ignored permanently. No server involved — the extension's service worker polls Telegram, so commands apply while Chrome is running (queued up to 24h otherwise).
 - **Auto-scrape URL parameter** — appending `?tlv_auto_scrape=1` to a Facebook URL starts a 30-minute scrape automatically after a 4-second render delay. Useful for scheduled-task workflows.
 - **Export JSON** — dump every IndexedDB record to a JSON file for backup or external analysis.
 
@@ -47,7 +49,7 @@ Classification is fully synchronous from the content script's perspective — by
 
 - **Chrome** or any Chromium-based browser that supports Manifest V3 (Edge, Arc, Brave).
 
-No API keys. No external services. No network traffic.
+No API keys. No external services. No network traffic — unless you opt in to Telegram notifications, in which case the only external endpoint the extension ever talks to is `api.telegram.org`, using a bot token you create yourself (free, 2 minutes via [@BotFather](https://t.me/BotFather)).
 
 ---
 
@@ -88,6 +90,18 @@ Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[i
 - **🗑 Delete All** — wipes every post from IndexedDB. Requires confirmation (shows the current count). Use this before a re-scrape when you want a clean slate.
 - **Export JSON** — download every IndexedDB record as a JSON file.
 
+### Telegram notifications
+
+One-time setup (~3 minutes):
+
+1. **Create a bot.** In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` → pick a display name and a unique username ending in `bot`. BotFather replies with a **bot token**.
+2. **Paste the token** into the dashboard's **🔔 Notifications** panel and press **Save**.
+3. **Message your bot `/start`** from your phone. The first chat to `/start` becomes the bound chat automatically, and the bot walks you through a 6-question preferences wizard (max price → rooms → apartment/roommates → broker fee → must-contain keywords → exclude keywords; reply `skip` to any). Finishing the wizard switches alerts ON.
+
+From then on, every scrape that captures a matching new post sends you one Telegram message. Manage everything from the chat: `/status`, `/reset`, `/on`, `/off`, `/help` — or use the same 🔔 dashboard panel; both edit the same settings.
+
+**Privacy note:** with notifications enabled, matching post text is sent to Telegram's API through your own bot. Strangers who find your bot's username see nothing — alerts go only to the bound chat, and messages from any other chat are silently dropped. Keep the bot *token* secret; it's the only credential that matters.
+
 ### Auto-scrape via URL parameter
 
 Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will start a 30-minute scrape automatically after a 4-second render delay.
@@ -116,6 +130,8 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 │   ├── db.js                           # IndexedDB wrapper
 │   ├── dedup.js                        # SHA-256 exact hash + first-10-word prefix key
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
+│   ├── notify.js                       # Telegram notify — settings, matching, send, format
+│   ├── bot.js                          # Telegram bot — polling, commands, /start wizard
 
 ├── icons/                              # 16/48/128 PNG icons
 ├── CLAUDE.md                           # Project guide for Claude Code
@@ -132,6 +148,7 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 3. ~~**Missing-posts capture overhaul.**~~ ✅ Done (v1.2.0) — detection rewritten to `role="feed"` child units with body-anchor and commerce-link fallbacks; fixed neighbour-ID theft (a permalink-less post stealing an adjacent post's ID and overwriting it); pure Marketplace listing cards now captured; anonymous posts hashed on full text to prevent overwrites.
 4. ~~**Improve duplicate detection.**~~ ✅ Done (v1.4.0) — two-layer dedup: exact SHA-256 match plus prefix-key matching on the first 10 normalised words. Catches cross-posted listings edited before reposting (different phone, emoji, price tweak).
 5. **Fix the group-name capture bug.** Some group names come through truncated.
+6. ~~**Telegram notifications + phone-side bot control.**~~ ✅ Done (v2.0.0) — opt-in push alerts through a user-owned Telegram bot when a newly captured post matches saved preferences (nulls-pass matching, per-post messages, no re-notification on re-scrapes/duplicates, failed sends retried next scrape); preferences configurable from the dashboard 🔔 panel or from the Telegram chat itself (`/start` wizard, `/reset`, `/status`, `/on` `/off`), with auto-bind of the first chat and silent dropping of strangers.
 
 ### Known limitations
 
@@ -149,4 +166,4 @@ See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](ht
 
 ## Disclaimer
 
-This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is fully offline — no data leaves your machine.
+This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is offline by default — no data leaves your machine unless you opt in to Telegram notifications, which send matching post text to Telegram's API through your own bot.

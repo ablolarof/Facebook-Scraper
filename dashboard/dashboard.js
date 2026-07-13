@@ -19,6 +19,9 @@ import {
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
 
+import { getNotifySettings, saveNotifySettings, sendTelegram, detectChatId }
+  from '../lib/notify.js';
+
 let allPosts      = [];   // every record from IndexedDB
 let filteredPosts = [];   // subset after applying sidebar filters
 const expandedPostIds = new Set(); // post_ids whose full text is currently visible
@@ -382,6 +385,13 @@ function bindControls() {
   el('retest-regex-btn').addEventListener('click', retestRegex);
   el('regex-extract-btn').addEventListener('click', regexExtractAll);
   el('delete-all-btn').addEventListener('click', deleteAllPosts);
+
+  // Notifications settings modal.
+  el('notify-settings-btn').addEventListener('click', openNotifyModal);
+  el('notify-close-btn').addEventListener('click', () => el('notify-overlay').classList.add('hidden'));
+  el('notify-save-btn').addEventListener('click', saveNotifyForm);
+  el('notify-test-btn').addEventListener('click', sendNotifyTest);
+  el('notify-detect-btn').addEventListener('click', detectNotifyChatId);
 
   // Event delegation for card buttons.
   el('card-grid').addEventListener('click', handleCardClick);
@@ -1134,4 +1144,99 @@ function relativeTime(isoStr) {
   if (hrs < 24)  return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
+}
+
+// ── Telegram notifications settings modal ─────────────────────────────────────
+// Settings live in chrome.storage.local under 'notify_settings' (lib/notify.js),
+// which the service worker reads on every SAVE_POST. The dashboard only
+// edits them — matching + sending happen in background.js (stage 7c).
+
+async function openNotifyModal() {
+  const s = await getNotifySettings();
+  el('notify-enabled').checked = s.enabled;
+  el('notify-token').value     = s.bot_token;
+  el('notify-chat-id').value   = s.chat_id;
+  el('notify-max-price').value = s.max_price ?? '';
+  el('notify-min-rooms').value = s.min_rooms ?? '';
+  el('notify-max-rooms').value = s.max_rooms ?? '';
+  el('notify-roommates').value = s.roommates;
+  el('notify-broker').value    = s.broker;
+  el('notify-include').value   = (s.include_keywords || []).join(', ');
+  el('notify-exclude').value   = (s.exclude_keywords || []).join(', ');
+  setNotifyStatus('');
+  el('notify-overlay').classList.remove('hidden');
+}
+
+function readNotifyForm() {
+  const num = id => {
+    const v = parseFloat(el(id).value);
+    return Number.isFinite(v) ? v : null;
+  };
+  const csv = id => el(id).value.split(',').map(s => s.trim()).filter(Boolean);
+  return {
+    enabled:          el('notify-enabled').checked,
+    bot_token:        el('notify-token').value.trim(),
+    chat_id:          el('notify-chat-id').value.trim(),
+    max_price:        num('notify-max-price'),
+    min_rooms:        num('notify-min-rooms'),
+    max_rooms:        num('notify-max-rooms'),
+    roommates:        el('notify-roommates').value,
+    broker:           el('notify-broker').value,
+    include_keywords: csv('notify-include'),
+    exclude_keywords: csv('notify-exclude'),
+  };
+}
+
+async function saveNotifyForm() {
+  const s = readNotifyForm();
+  await saveNotifySettings(s);
+  if (s.enabled && (!s.bot_token || !s.chat_id)) {
+    setNotifyStatus('Saved, but notifications are enabled without a bot token / chat ID — nothing will send until both are set.', 'warn');
+  } else {
+    setNotifyStatus('Saved ✓', 'ok');
+  }
+}
+
+// Test uses the CURRENT form values, not the saved ones, so the user can
+// verify credentials before committing them.
+async function sendNotifyTest() {
+  const s = readNotifyForm();
+  if (!s.bot_token || !s.chat_id) {
+    setNotifyStatus('Enter the bot token and chat ID first.', 'err');
+    return;
+  }
+  setNotifyStatus('Sending…');
+  try {
+    await sendTelegram(s.bot_token, s.chat_id,
+      '✅ TLV Rentals test — notifications are working.');
+    setNotifyStatus('Test message sent ✓ — check Telegram.', 'ok');
+  } catch (err) {
+    setNotifyStatus(err.message || String(err), 'err');
+  }
+}
+
+async function detectNotifyChatId() {
+  const token = el('notify-token').value.trim();
+  if (!token) {
+    setNotifyStatus('Enter the bot token first.', 'err');
+    return;
+  }
+  setNotifyStatus('Detecting…');
+  try {
+    const id = await detectChatId(token);
+    if (id) {
+      el('notify-chat-id').value = id;
+      setNotifyStatus('Chat ID detected ✓ — remember to Save.', 'ok');
+    } else {
+      setNotifyStatus('No recent messages found. Open your bot in Telegram, send it any message, then click Detect again.', 'err');
+    }
+  } catch (err) {
+    setNotifyStatus(err.message || String(err), 'err');
+  }
+}
+
+function setNotifyStatus(text, kind) {
+  const box = el('notify-status');
+  box.textContent = text;
+  box.className = 'notify-status' + (kind ? ` notify-status-${kind}` : '');
 }

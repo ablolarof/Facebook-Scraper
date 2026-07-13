@@ -16,6 +16,7 @@
     <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
     <button id="retest-regex-btn" title="Re-run the current regex on all posts and preview what would change before committing">Re-test Regex</button>
     <button id="export-btn">Export JSON</button>
+    <button id="notify-settings-btn" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
     <button id="delete-all-btn" class="btn-danger" title="Permanently delete all scraped posts so they can be re-scraped fresh on the next run">🗑 Delete All</button>
   </header>
 
@@ -147,6 +148,85 @@
       </div>
     </main>
 
+  </div>
+
+  <!-- ── Telegram notifications settings modal (opened from the topbar) ── -->
+  <div id="notify-overlay" class="notify-overlay hidden">
+    <div class="notify-modal">
+      <h2>🔔 Telegram Notifications</h2>
+      <p class="notify-note">
+        When a scrape saves a <strong>new</strong> rental post matching these preferences,
+        you get a Telegram message. Blank fields mean no constraint. A post whose
+        price/rooms could not be extracted is never excluded by that rule (nulls pass).
+      </p>
+
+      <label class="notify-toggle">
+        <input type="checkbox" id="notify-enabled"> Enable notifications
+      </label>
+
+      <div class="notify-section">
+        <h3>Credentials</h3>
+        <div class="notify-field">
+          <label for="notify-token">Bot token (from @BotFather)</label>
+          <input type="password" id="notify-token" placeholder="123456789:AAH…" autocomplete="off">
+        </div>
+        <div class="notify-field">
+          <label for="notify-chat-id">Chat ID</label>
+          <div class="field-row">
+            <input type="text" id="notify-chat-id" placeholder="e.g. 123456789">
+            <button id="notify-detect-btn" title="Send your bot any message in Telegram first, then click — this reads the bot's recent updates and fills in your chat ID.">Detect</button>
+          </div>
+        </div>
+        <button id="notify-test-btn" title="Sends a test message through the token + chat ID entered above (does not need to be saved first)">Send test message</button>
+      </div>
+
+      <div class="notify-section">
+        <h3>Match preferences</h3>
+        <div class="notify-field">
+          <label for="notify-max-price">Max price (₪/mo)</label>
+          <input type="number" id="notify-max-price" min="0" step="100" placeholder="no limit">
+        </div>
+        <div class="notify-field">
+          <label for="notify-min-rooms">Rooms</label>
+          <div class="field-row">
+            <input type="number" id="notify-min-rooms" min="0" step="0.5" placeholder="min">
+            <span>–</span>
+            <input type="number" id="notify-max-rooms" min="0" step="0.5" placeholder="max">
+          </div>
+        </div>
+        <div class="notify-field">
+          <label for="notify-roommates">Roommates</label>
+          <select id="notify-roommates">
+            <option value="either">Either</option>
+            <option value="no">Whole apartment only</option>
+            <option value="yes">Roommate listings only</option>
+          </select>
+        </div>
+        <div class="notify-field">
+          <label for="notify-broker">Broker fee</label>
+          <select id="notify-broker">
+            <option value="either">Either</option>
+            <option value="no">No broker fee only</option>
+            <option value="yes">Broker listings only</option>
+          </select>
+        </div>
+        <div class="notify-field">
+          <label for="notify-include">Must contain one of (comma-separated)</label>
+          <input type="text" id="notify-include" placeholder="e.g. פלורנטין, florentin">
+        </div>
+        <div class="notify-field">
+          <label for="notify-exclude">Skip if it contains (comma-separated)</label>
+          <input type="text" id="notify-exclude" placeholder="e.g. סאבלט, sublet">
+        </div>
+      </div>
+
+      <div id="notify-status" class="notify-status"></div>
+
+      <div class="notify-actions">
+        <button id="notify-save-btn" class="btn-notify-save">Save</button>
+        <button id="notify-close-btn" class="btn-notify-cancel">Close</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="dashboard.js"></script>

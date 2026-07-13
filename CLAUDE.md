@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **TLV Rentals** is a Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental posts from Facebook feeds and classifies them with a local regex pipeline. Posts are stored in IndexedDB and presented through a filterable dashboard.
 
-The extension is fully offline. No data leaves your machine.
+The extension is offline by default — no data leaves your machine — with one **opt-in** exception since v2.0.0: Telegram notifications. When enabled, matching new posts (and bot commands) travel between the extension and `api.telegram.org` using the user's own bot token. Nothing else touches the network.
 
 ## How to work with the user
 
@@ -19,7 +19,7 @@ Hand the user paste-ready snippets — DevTools console blocks against the live 
 
 This applies to every stage of the project — bug fixes, refactors, new features. Skipping the diagnostic step has historically led to rewrites and lost work.
 
-## Active 5-stage plan
+## Active plan
 
 These stages are sequential.
 
@@ -29,6 +29,7 @@ These stages are sequential.
 4. **Missing-posts capture overhaul** (complete as of 2026-05-30, v1.2.0). See the dedicated section below. Detection rewritten to `role="feed"` child units; neighbour-ID theft fixed; pure Marketplace cards captured; anonymous-post hashing hardened.
 5. ~~**Improve duplicate detection.**~~ (Complete as of 2026-07-12, v1.4.0.) Two-layer dedup: exact SHA-256 match (unchanged) plus a `prefix_key` index on the first 10 normalised words (`lib/dedup.js::computePrefixKey`). `findByPrefixKey` in `lib/db.js` does an O(1) IDB index lookup after the exact-hash check fails. Catches cross-posted listings edited before reposting (different phone, emoji, small price change). DB schema bumped to v2 to add the `prefix_key` index; `onupgradeneeded` handles the v1→v2 migration automatically.
 6. **Fix the group-name capture bug.** Some group names come through truncated.
+7. ~~**Telegram notifications + phone-side bot control.**~~ (Complete as of 2026-07-13, v2.0.0.) See the dedicated section below. Push alerts to the user's phone when a newly scraped post matches saved preferences; preferences editable from the dashboard 🔔 modal or from the Telegram chat itself (`/start` setup wizard).
 
 ## Post detection (v1.2.0 overhaul)
 
@@ -78,6 +79,8 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/db.js** | IndexedDB wrapper — including `clearAllPosts()` for bulk deletion. |
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
+| **lib/notify.js** | Telegram notification plumbing — settings store, `sendTelegram`, `matchesPreferences`, `formatPostMessage`. |
+| **lib/bot.js** | Telegram bot command interface — getUpdates polling, command router, `/start` setup wizard. |
 
 ## Common development tasks
 
@@ -147,12 +150,48 @@ Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classi
 
 ### Async patterns
 
-- **SAVE_POST** → regex classify + tag extract inline (no network) → save → respond.
+- **SAVE_POST** → regex classify + tag extract inline (no network) → save → notification check (`notifyIfMatch`, errors never propagate to the save result) → respond.
 
 ### Content script origins
 
 - **Content scripts** run at `facebook.com` origin; their `indexedDB` is Facebook's.
 - **Service worker & dashboard** run at `chrome-extension://[id]` origin, sharing one IndexedDB.
+
+## Telegram notifications (v2.0.0)
+
+Opt-in push alerts: when a scrape saves a **first-time-captured** post that matches the user's preferences, `background.js::notifyIfMatch` sends one plain-text Telegram message (price/rooms/size, group, 200-char snippet, permalink). Requires a user-created bot (@BotFather) whose token is pasted into the dashboard 🔔 modal.
+
+### Settings & state
+
+- **`notify_settings`** (chrome.storage.local, one flat object — `lib/notify.js::DEFAULT_NOTIFY_SETTINGS`): `enabled`, `bot_token`, `chat_id`, `max_price`, `min_rooms`, `max_rooms`, `roommates`/`broker` (`'yes' | 'no' | 'either'`), `include_keywords`, `exclude_keywords`. Edited by BOTH the dashboard 🔔 modal and the bot wizard — single source of truth; reads merge over defaults so new fields back-fill old saves.
+- **`notify_bot_state`** (chrome.storage.local, `lib/bot.js`): `last_update_id` (getUpdates offset) + `wizard` (`{ step, draft }` or null). Wizard survives worker restarts.
+
+### Matching rules (`lib/notify.js::matchesPreferences`)
+
+- **Nulls pass** (recall over precision, user's explicit choice): a rule only excludes when the extracted field exists AND violates it. Null label also passes; only a confirmed `not_rental` is excluded. `tags_human_override` wins over `tags`.
+- Keywords are case-insensitive substring checks on the raw text; include-list = at least one must appear; exclude-list = any appearance skips.
+
+### Anti-spam / delivery guarantees
+
+- Only first-time captures qualify (`wasNewRecord`) — the backlog never floods the chat on a re-scrape. Duplicates (hash or prefix) never alert.
+- `notified_at` / `notify_failed_at` are stamped on the post row and **carried across post_id overwrites** in `handleSavePost` (an overwrite replaces the row wholesale and would otherwise erase them).
+- A failed send stamps `notify_failed_at` → retried when the next scrape re-saves that post. Success stamps `notified_at` → silent forever after.
+- The notify check runs after `savePost` and can never fail the save.
+
+### Bot (`lib/bot.js`)
+
+- **No server.** A 30s `chrome.alarms` tick (`tlv-bot-poll`) plus a poll on every worker start calls `getUpdates`; while a conversation is active it switches to 20s long-poll bursts (~2 min after last activity) so wizard answers get near-instant replies.
+- **Commands:** `/start` (bind + 6-step setup wizard), `/reset` (clear prefs + wizard), `/status`, `/on` `/off`, `/cancel`, `/help`. Finishing the wizard sets `enabled: true`.
+- **Auto-bind:** when `chat_id` is empty, the first chat to send `/start` becomes the bound chat; all other chats are dropped silently before command parsing. This replaces the dashboard Detect button as the primary binding path.
+- **First poll drains the backlog** without acting on it (messages sent before the bot was configured must not trigger surprise replies).
+- **At-most-once:** each update's offset is persisted BEFORE handling — a crash loses that message rather than replaying commands forever.
+- **Single getUpdates consumer:** the poller owns the connection. The dashboard Detect button's own `getUpdates` call can 409-conflict with it — harmless (both sides catch), but expect Detect to be unreliable while the poller runs.
+
+### Gotchas
+
+- `host_permissions` includes `https://api.telegram.org/*`; permissions include `"alarms"`. Unpacked extensions gain new host permissions silently on reload (no prompt — that's normal).
+- Messages are plain text, no `parse_mode` — Hebrew post text full of `<`/`&`/`_` would break HTML/Markdown modes.
+- The bot only works while Chrome is running; Telegram queues updates ~24h, and the worker-start poll applies queued commands before the next scrape saves anything.
 
 ## Message contracts
 
