@@ -245,4 +245,4 @@ Chrome, Edge, Arc, Brave (any Chromium-based MV3 browser). Not Firefox.
 
 ## License
 
-GNU General Public License v3.0. See LICENSE.
+GNU General Public License v3.0 with an added restriction that prevails over it: **no commercial use of any kind** (no selling/subscription of the software or derivatives, no use by or for real-estate businesses, personal use only). See the License section at the top of README.md and LICENSE.

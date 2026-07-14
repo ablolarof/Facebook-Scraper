@@ -6,6 +6,29 @@
 
 ---
 
+## License
+
+This project is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License v3.0** as published by the Free Software Foundation, **subject to the commercial-use restriction below, which prevails over the license**.
+
+See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+
+### ⚠️ No commercial use — this restriction overrides the license
+
+**Notwithstanding anything in the license or any other document, using this software, any part of it, or any derivative of it for any commercial purpose is strictly prohibited.** This includes, without limitation:
+
+- selling this software or a modified version of it, or charging any fee, subscription, or other consideration for access to it or to anything built from it;
+- use by or on behalf of a realtor, broker, agency, or any other real-estate business, or any other non-personal use.
+
+This tool exists for one purpose: a private individual finding an apartment for themselves. Anything else is not permitted.
+
+---
+
+## Disclaimer
+
+This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is offline by default — no data leaves your machine unless you opt in to Telegram notifications, which send matching post text to Telegram's API through your own bot.
+
+---
+
 ## Features
 
 - **One-click scraping** — open any Facebook group or feed, click *Scrape This Feed* in the popup, and the extension auto-scrolls and captures posts. Configurable stop conditions (N consecutive duplicates, or a time limit). A continuation banner lets you push past the stop point for 50 more posts or 5 more minutes.
@@ -154,16 +177,3 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 
 - **Open button on click-only posts** — anonymous, background-colour, and zero/collapsed-comment posts expose no permalink in the DOM (Facebook builds the URL only on click). They are captured with full text, but the Open button is disabled. A click-based permalink resolver is a possible future enhancement.
 
----
-
-## License
-
-This project is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License v3.0** as published by the Free Software Foundation.
-
-See [LICENSE](LICENSE) for the full text, or visit [gnu.org/licenses/gpl-3.0](https://www.gnu.org/licenses/gpl-3.0.html).
-
----
-
-## Disclaimer
-
-This tool is for personal use. Scraping Facebook may be against their Terms of Service. Use responsibly and at your own risk. The extension is offline by default — no data leaves your machine unless you opt in to Telegram notifications, which send matching post text to Telegram's API through your own bot.
