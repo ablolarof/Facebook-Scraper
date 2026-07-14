@@ -129,6 +129,8 @@ From then on, every scrape that captures a matching new post sends you one Teleg
 
 Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will start a 30-minute scrape automatically after a 4-second render delay.
 
+To run this on a schedule (e.g. every hour, so Telegram alerts arrive while you're away), see the ready-made Windows Task Scheduler setup in [`automation/`](automation/README.md) — a one-line batch trigger plus an importable hourly task.
+
 ---
 
 ## Project structure
@@ -155,6 +157,10 @@ Append `?tlv_auto_scrape=1` to any Facebook URL and the content script will star
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 │   ├── notify.js                       # Telegram notify — settings, matching, send, format
 │   ├── bot.js                          # Telegram bot — polling, commands, /start wizard
+├── automation/
+│   ├── trigger.bat                     # Opens Chrome with the auto-scrape URL
+│   ├── scraper_task.xml                # Importable hourly Task Scheduler task
+│   └── README.md                       # Scheduled-scrape setup guide
 
 ├── icons/                              # 16/48/128 PNG icons
 ├── CLAUDE.md                           # Project guide for Claude Code

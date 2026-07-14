@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TLV Rentals - hourly scrape task (Windows Task Scheduler template).
+
+  Before importing:
+    1. Replace BOTH occurrences of C:\PATH\TO\REPO below with the folder
+       you cloned this repository into.
+    2. Optionally adjust StartBoundary to any past date/time you like -
+       the task repeats every hour from that anchor.
+
+  Import via Task Scheduler > Action > Import Task..., or from a terminal:
+    schtasks /Create /TN "TLV Rentals Scraper" /XML scraper_task.xml
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>TLV Rentals - hourly Facebook scrape (auto-scrape URL trigger)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T08:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\PATH\TO\REPO\automation\trigger.bat</Command>
+      <WorkingDirectory>C:\PATH\TO\REPO\automation</WorkingDirectory>
+    </Exec>
+  </Actions>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+</Task>
