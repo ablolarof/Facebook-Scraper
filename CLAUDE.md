@@ -138,6 +138,12 @@ Three independent mechanisms, checked in order on every `SAVE_POST`:
 - **`dedup_hash`** (`lib/dedup.js`, SHA-256 of normalised text + first image URL) catches cross-group reposts that have *different* post_ids but identical content; the duplicate inherits the original's classification.
 - **`prefix_key`** (`lib/dedup.js::computePrefixKey`, first 10 normalised words joined by spaces) catches near-duplicates — the same listing reposted with minor edits (different phone number, added emoji, small price change). Stored as a field on each post and indexed in IDB (v2 schema); `findByPrefixKey` does an O(1) lookup after the exact `dedup_hash` check misses.
 
+**Self-shadowing guard (2026-07-17).** `findByDedupHash` / `findByPrefixKey` take an `excludePostId` (the post being saved). Without it, `index.get()` returns the lowest-primary-key match — on a re-scrape that can be the post's own row, hiding a true duplicate that sorts after it. Confirmed live: a re-scraped post whose post_id sorted below its cross-group original never got marked.
+
+**Maintenance sweep** (`background.js::dedupMaintenanceSweep`, one-time per profile, guarded by `dedup_sweep_v1` in chrome.storage.local): backfills `prefix_key` on pre-v1.4.0 rows (which are otherwise invisible to the index) and retro-marks duplicates that entered the DB unmarked. Within each prefix family the earliest clean post stays the original; later ones are marked only when `textSimilarity` ≥ 0.55 — the similarity gate spares broker-template posts that share an opening line but describe different apartments.
+
+**Manual dupe marking** (dashboard ⊘ Dupe) also flags a `regex_miss` with `missed_fields: ['duplicate']` and pairs the post with its most similar non-duplicate (`textSimilarity` ≥ 0.55 → `duplicate_of`/`duplicate_sim`); the miss export prints both full texts.
+
 ### Classification (regex only)
 
 `lib/regex_extractor.js` exports:

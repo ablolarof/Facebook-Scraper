@@ -14,8 +14,8 @@
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard.
 
-import { savePost, findByDedupHash, findByPrefixKey, countPosts, getPost } from './lib/db.js';
-import { computeDedupHash, computePrefixKey } from './lib/dedup.js';
+import { savePost, findByDedupHash, findByPrefixKey, countPosts, getPost, getAllPosts } from './lib/db.js';
+import { computeDedupHash, computePrefixKey, textSimilarity } from './lib/dedup.js';
 import { regexClassifyPost, regexExtractTags, mergeWithRegex }
   from './lib/regex_extractor.js';
 import { getNotifySettings, sendTelegram, formatPostMessage, matchesPreferences }
@@ -39,6 +39,59 @@ pollBot();
 // The Gemini era stored these in chrome.storage.local; the regex-only pipeline
 // has no use for them. Removing on worker startup is idempotent and silent.
 chrome.storage.local.remove(['gemini_api_key', 'gemini_daily_count']).catch(() => {});
+
+// ── One-time dedup maintenance sweep ─────────────────────────────────────────
+// Repairs two historic dedup gaps (2026-07-17 dupe-miss report):
+//   1. Rows scraped before v1.4.0 have no prefix_key field, so they are
+//      invisible to the prefix index — backfill it.
+//   2. Duplicates that entered the DB unmarked (self-shadowing index.get bug,
+//      or saved before their family's original existed) are never re-examined
+//      — retro-mark them. Within each prefix family the earliest clean post
+//      stays the original; later ones are marked only when whole-text
+//      similarity >= 0.55, which spares broker-template posts that share an
+//      opening line but describe different apartments.
+// Guarded by a storage flag so it runs once per profile.
+async function dedupMaintenanceSweep() {
+  const { dedup_sweep_v1 } = await chrome.storage.local.get('dedup_sweep_v1');
+  if (dedup_sweep_v1) return;
+  const posts = await getAllPosts();
+
+  let backfilled = 0;
+  for (const p of posts) {
+    if (p.prefix_key === undefined) {
+      p.prefix_key = computePrefixKey(p.text || '');
+      await savePost(p);
+      backfilled++;
+    }
+  }
+
+  const families = new Map();
+  for (const p of posts) {
+    if (!p.prefix_key) continue;
+    if (!families.has(p.prefix_key)) families.set(p.prefix_key, []);
+    families.get(p.prefix_key).push(p);
+  }
+
+  let marked = 0;
+  for (const list of families.values()) {
+    const clean = list.filter(p => !p.is_duplicate)
+                      .sort((a, b) => (a.scraped_at || '').localeCompare(b.scraped_at || ''));
+    if (clean.length < 2) continue;
+    const original = clean[0];
+    for (const d of clean.slice(1)) {
+      if (textSimilarity(original.text || '', d.text || '') >= 0.55) {
+        d.is_duplicate = true;
+        d.duplicate_of = original.post_id;
+        await savePost(d);
+        marked++;
+      }
+    }
+  }
+
+  await chrome.storage.local.set({ dedup_sweep_v1: new Date().toISOString() });
+  console.log(`[TLV Rentals] Dedup sweep: ${backfilled} prefix keys backfilled, ${marked} retroactive duplicates marked`);
+}
+dedupMaintenanceSweep().catch(err => console.warn('[TLV Rentals] Dedup sweep failed:', err));
 
 // ── Message routing ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -68,7 +121,7 @@ async function handleSavePost(post) {
       text:       post.text,
       image_urls: post.image_urls,
     });
-    const existing = await findByDedupHash(dedupHash);
+    const existing = await findByDedupHash(dedupHash, post.post_id);
 
     // Did a record with this exact post_id already exist? If yes, savePost()
     // will overwrite it (silent re-save), not add a new row to IDB. The popup
@@ -128,7 +181,7 @@ async function handleSavePost(post) {
     // If any stored post opens with the same first 10 words, this is almost
     // certainly the same listing reposted with minor edits.
     if (!post.is_duplicate && post.prefix_key) {
-      const prefixMatch = await findByPrefixKey(post.prefix_key);
+      const prefixMatch = await findByPrefixKey(post.prefix_key, post.post_id);
       if (prefixMatch && prefixMatch.post_id !== post.post_id) {
         console.log(`[TLV Rentals] Prefix duplicate: ${post.post_id} → ${prefixMatch.post_id}`);
         post.is_duplicate    = true;
