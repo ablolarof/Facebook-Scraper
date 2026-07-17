@@ -38,6 +38,20 @@ body {
   transition: background 0.15s;
 }
 .topbar button:hover { background: rgba(255,255,255,0.18); }
+.export-group { display: inline-flex; }
+.export-group select {
+  padding: 6px 6px;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.export-group select option { color: #222; background: #fff; }
+.export-group button { border-radius: 0 6px 6px 0; }
 .topbar button.btn-danger { border-color: rgba(255,120,120,0.8); background: rgba(160,20,20,0.55); }
 .topbar button.btn-danger:hover { background: rgba(200,30,30,0.85); }
 

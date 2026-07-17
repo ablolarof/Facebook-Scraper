@@ -11,7 +11,6 @@
 import {
   getAllPosts,
   updatePostStatus,
-  exportAllJSON,
   savePost,
   deletePost,
   clearAllPosts,
@@ -502,6 +501,32 @@ async function handleCardClick(e) {
 
   if (action === 'toggle-dupe') {
     post.is_duplicate = !post.is_duplicate;
+    // A manually marked dupe is also a dedup miss — the two-layer dedup
+    // (lib/dedup.js: exact hash + prefix_key) failed to catch it. Flag it so
+    // it lands in the next miss export; unmarking removes the flag again.
+    if (post.is_duplicate) {
+      const existing   = post.regex_miss || {};
+      const prevFields = existing.missed_fields || [];
+      if (!prevFields.includes('duplicate')) {
+        post.regex_miss = {
+          ...existing,
+          missed_fields: [...prevFields, 'duplicate'],
+          key_phrases:   existing.key_phrases || {},
+          flagged_at:    existing.flagged_at || new Date().toISOString(),
+          exported_at:   null, // (re)appear in the next miss export
+        };
+      }
+    } else if (post.regex_miss?.missed_fields?.includes('duplicate')) {
+      const newFields = post.regex_miss.missed_fields.filter(f => f !== 'duplicate');
+      const isEmpty   = newFields.length === 0
+                     && Object.keys(post.regex_miss.key_phrases || {}).length === 0
+                     && !post.regex_miss.note;
+      post.regex_miss = isEmpty ? null : {
+        ...post.regex_miss,
+        missed_fields: newFields,
+        exported_at:   null,
+      };
+    }
     await savePost(post);
     applyFilters();
     return;
@@ -755,14 +780,35 @@ async function deleteAllPosts() {
   }
 }
 
+// Export a chosen subset of posts as JSON. The scope dropdown mirrors the
+// sidebar categories: label buckets use effectiveLabel with both sources
+// (human wins over AI), duplicates/misses are independent flags, and
+// "Current view" exports exactly what the active filters show.
 async function exportJSON() {
-  const json = await exportAllJSON();
-  const blob = new Blob([json], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'), {
-    href:     url,
-    download: `tlv-rentals-${new Date().toISOString().slice(0, 10)}.json`,
-  });
+  const scope = el('export-scope')?.value || 'all';
+  const both  = ['human', 'ai'];
+  const subsets = {
+    all:        () => allPosts,
+    view:       () => filteredPosts,
+    rental:     () => allPosts.filter(p => effectiveLabel(p, both) === 'rental'),
+    not_rental: () => allPosts.filter(p => effectiveLabel(p, both) === 'not_rental'),
+    unlabeled:  () => allPosts.filter(p => effectiveLabel(p, both) === 'unlabeled'),
+    duplicates: () => allPosts.filter(p => p.is_duplicate),
+    misses:     () => allPosts.filter(p => p.regex_miss),
+  };
+  const posts = (subsets[scope] || subsets.all)();
+  if (posts.length === 0) {
+    alert(`No posts in the "${scope}" category — nothing to export.`);
+    return;
+  }
+  const json  = JSON.stringify(posts, null, 2);
+  const blob  = new Blob([json], { type: 'application/json' });
+  const url   = URL.createObjectURL(blob);
+  const date  = new Date().toISOString().slice(0, 10);
+  const fname = scope === 'all'
+    ? `tlv-rentals-${date}.json`
+    : `tlv-rentals-${scope}-${date}.json`;
+  const a = Object.assign(document.createElement('a'), { href: url, download: fname });
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -899,6 +945,10 @@ async function exportMisses() {
     lines.push('---');
     lines.push(`### Miss ${i + 1}  (post_id: ${post.post_id})`);
     if (m.missed_fields?.length) lines.push(`Missed fields:  ${m.missed_fields.join(', ')}`);
+    if (m.missed_fields?.includes('duplicate')) {
+      lines.push('Duplicate:  manually marked as a dupe — dedup (lib/dedup.js) failed to catch it.'
+        + (post.duplicate_of ? `  Duplicate of: ${post.duplicate_of}` : ''));
+    }
     if (Object.keys(kp).length) {
       lines.push('Key phrases:');
       for (const [field, phrase] of Object.entries(kp)) {
@@ -918,6 +968,9 @@ async function exportMisses() {
   lines.push('---');
   lines.push('');
   lines.push('Please update lib/regex_extractor.js to handle the cases above.');
+  if (toExport.some(p => p.regex_miss.missed_fields?.includes('duplicate'))) {
+    lines.push('For "duplicate" misses: improve lib/dedup.js (exact hash / prefix_key) so these are caught automatically.');
+  }
   lines.push('Constraints: regex-only, no API calls, no new imports.');
 
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
