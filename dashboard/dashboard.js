@@ -18,6 +18,8 @@ import {
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
 
+import { textSimilarity } from '../lib/dedup.js';
+
 import { getNotifySettings, saveNotifySettings, sendTelegram, detectChatId }
   from '../lib/notify.js';
 
@@ -505,6 +507,23 @@ async function handleCardClick(e) {
     // (lib/dedup.js: exact hash + prefix_key) failed to catch it. Flag it so
     // it lands in the next miss export; unmarking removes the flag again.
     if (post.is_duplicate) {
+      // Pair the dupe with its suspected original: highest token-set Jaccard
+      // among non-duplicate posts. The pair is the actual training signal —
+      // the miss export includes both texts so the dedup rules can be fixed
+      // against the real divergence. Below the threshold nothing is stored;
+      // the export then says the pair is unknown (also a signal).
+      if (!post.duplicate_of) {
+        let best = null, bestScore = 0;
+        for (const other of allPosts) {
+          if (other.post_id === post.post_id || other.is_duplicate) continue;
+          const s = textSimilarity(post.text || '', other.text || '');
+          if (s > bestScore) { bestScore = s; best = other; }
+        }
+        if (best && bestScore >= 0.55) {
+          post.duplicate_of  = best.post_id;
+          post.duplicate_sim = Math.round(bestScore * 100) / 100;
+        }
+      }
       const existing   = post.regex_miss || {};
       const prevFields = existing.missed_fields || [];
       if (!prevFields.includes('duplicate')) {
@@ -516,16 +535,21 @@ async function handleCardClick(e) {
           exported_at:   null, // (re)appear in the next miss export
         };
       }
-    } else if (post.regex_miss?.missed_fields?.includes('duplicate')) {
-      const newFields = post.regex_miss.missed_fields.filter(f => f !== 'duplicate');
-      const isEmpty   = newFields.length === 0
-                     && Object.keys(post.regex_miss.key_phrases || {}).length === 0
-                     && !post.regex_miss.note;
-      post.regex_miss = isEmpty ? null : {
-        ...post.regex_miss,
-        missed_fields: newFields,
-        exported_at:   null,
-      };
+    } else {
+      // Unmarked — the user says it is NOT a dupe: drop the pairing too.
+      post.duplicate_of  = null;
+      post.duplicate_sim = null;
+      if (post.regex_miss?.missed_fields?.includes('duplicate')) {
+        const newFields = post.regex_miss.missed_fields.filter(f => f !== 'duplicate');
+        const isEmpty   = newFields.length === 0
+                       && Object.keys(post.regex_miss.key_phrases || {}).length === 0
+                       && !post.regex_miss.note;
+        post.regex_miss = isEmpty ? null : {
+          ...post.regex_miss,
+          missed_fields: newFields,
+          exported_at:   null,
+        };
+      }
     }
     await savePost(post);
     applyFilters();
@@ -793,7 +817,20 @@ async function exportJSON() {
     rental:     () => allPosts.filter(p => effectiveLabel(p, both) === 'rental'),
     not_rental: () => allPosts.filter(p => effectiveLabel(p, both) === 'not_rental'),
     unlabeled:  () => allPosts.filter(p => effectiveLabel(p, both) === 'unlabeled'),
-    duplicates: () => allPosts.filter(p => p.is_duplicate),
+    // Duplicates export also carries each dupe's original (when known), so
+    // the file is self-contained for analysing what dedup failed to match.
+    duplicates: () => {
+      const dupes = allPosts.filter(p => p.is_duplicate);
+      const seen  = new Set(dupes.map(p => p.post_id));
+      const out   = [...dupes];
+      for (const d of dupes) {
+        if (d.duplicate_of && !seen.has(d.duplicate_of)) {
+          const orig = allPosts.find(p => p.post_id === d.duplicate_of);
+          if (orig) { out.push(orig); seen.add(orig.post_id); }
+        }
+      }
+      return out;
+    },
     misses:     () => allPosts.filter(p => p.regex_miss),
   };
   const posts = (subsets[scope] || subsets.all)();
@@ -944,10 +981,13 @@ async function exportMisses() {
     const kp = m.key_phrases || {};
     lines.push('---');
     lines.push(`### Miss ${i + 1}  (post_id: ${post.post_id})`);
+    const isDupeMiss = m.missed_fields?.includes('duplicate');
     if (m.missed_fields?.length) lines.push(`Missed fields:  ${m.missed_fields.join(', ')}`);
-    if (m.missed_fields?.includes('duplicate')) {
+    if (isDupeMiss) {
       lines.push('Duplicate:  manually marked as a dupe — dedup (lib/dedup.js) failed to catch it.'
-        + (post.duplicate_of ? `  Duplicate of: ${post.duplicate_of}` : ''));
+        + (post.duplicate_of
+            ? `  Suspected original: ${post.duplicate_of}${post.duplicate_sim ? ` (similarity ${post.duplicate_sim})` : ''}`
+            : '  No similar post found (similarity < 0.55) — pair unknown.'));
     }
     if (Object.keys(kp).length) {
       lines.push('Key phrases:');
@@ -959,9 +999,25 @@ async function exportMisses() {
     lines.push('');
     lines.push('Post text:');
     lines.push('"""');
-    lines.push((post.text || '').slice(0, 600));
-    if ((post.text || '').length > 600) lines.push('…[truncated]');
+    // Duplicate misses need the FULL text of both posts — the fix is designed
+    // against exactly where the two texts diverge, which truncation can hide.
+    if (isDupeMiss) {
+      lines.push(post.text || '');
+    } else {
+      lines.push((post.text || '').slice(0, 600));
+      if ((post.text || '').length > 600) lines.push('…[truncated]');
+    }
     lines.push('"""');
+    if (isDupeMiss && post.duplicate_of) {
+      const orig = allPosts.find(p => p.post_id === post.duplicate_of);
+      if (orig) {
+        lines.push('');
+        lines.push(`Suspected original's text (post_id: ${orig.post_id}):`);
+        lines.push('"""');
+        lines.push(orig.text || '');
+        lines.push('"""');
+      }
+    }
     lines.push('');
   });
 
