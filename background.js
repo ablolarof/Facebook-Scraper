@@ -250,7 +250,12 @@ async function notifyIfMatch(post, wasNewRecord) {
   if (!matchesPreferences(post, s)) return;
 
   try {
-    await sendTelegram(s.bot_token, s.chat_id, formatPostMessage(post));
+    // The 🚩 Miss button (lib/bot.js::handleCallbackQuery) lets the user
+    // correct classification/price/rooms/etc straight from the alert.
+    const replyMarkup = {
+      inline_keyboard: [[{ text: '🚩 Miss', callback_data: `mopen:${post.post_id}` }]],
+    };
+    await sendTelegram(s.bot_token, s.chat_id, formatPostMessage(post), replyMarkup);
     post.notified_at      = new Date().toISOString();
     post.notify_failed_at = null;
     console.log(`[TLV Rentals] Notified: ${post.post_id}`);
