@@ -21,6 +21,17 @@ import { regexClassifyPost, regexExtractTags, mergeWithRegex }
 import { getNotifySettings, sendTelegram, formatPostMessage, matchesPreferences }
   from './lib/notify.js';
 import { pollBot } from './lib/bot.js';
+import { mlHybridLabel, mlBrokerFill, loadStoredMlWeights } from './lib/ml_classifier.js';
+
+// ── ML weights: prefer retrained weights from chrome.storage.local ───────────
+// Loaded at every worker start; hot-reloaded when a retrain (dashboard button
+// or Telegram /retrain) writes new weights.
+loadStoredMlWeights().then(src => console.log(`[TLV Rentals] ML weights: ${src}`));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.ml_weights) {
+    loadStoredMlWeights().then(src => console.log(`[TLV Rentals] ML weights reloaded (${src})`));
+  }
+});
 
 // ── Telegram bot command polling (stage 7d) ──────────────────────────────────
 // A 30-second alarm wakes the worker to check for bot commands; pollBot()
@@ -192,25 +203,42 @@ async function handleSavePost(post) {
       }
     }
 
-    // Run regex classification + tag extraction inline (no API, no rate limit).
-    // Skips duplicates (already inherited the original's label above) and any
-    // post a human has already labeled.
+    // Classify inline (no API, no rate limit): regex first, then the ML
+    // hybrid rule — the regex label stands unless the model is confidently
+    // sure it is wrong (or the regex returned null). Skips duplicates
+    // (already inherited the original's label above) and any post a human
+    // has already labeled. The model itself is NEVER trained on ai_label,
+    // so this override cannot feed back into training.
     if (!post.is_duplicate && !post.ai_label && !post.human_label) {
       const regexLabel = regexClassifyPost(post.text || '');
-      if (regexLabel) {
+      const ml = mlHybridLabel(post.text || '', regexLabel);
+      post.ml_prob = +ml.prob.toFixed(3);
+      if (ml.overrode || regexLabel == null) {
+        post.ai_label         = ml.label;
+        post.ai_classified_by = 'ml';
+      } else {
         post.ai_label         = regexLabel;
         post.ai_classified_by = 'regex';
-        post.ai_classified_at = new Date().toISOString();
-        if (regexLabel === 'rental') {
-          const rt = regexExtractTags(post.text || '');
-          post.regex_extracted_at = new Date().toISOString();
-          if (rt && Object.values(rt).some(v => v != null)) {
-            post.tags = mergeWithRegex(null, rt);
+      }
+      post.ai_classified_at = new Date().toISOString();
+      if (post.ai_label === 'rental') {
+        const rt = regexExtractTags(post.text || '');
+        post.regex_extracted_at = new Date().toISOString();
+        if (rt && Object.values(rt).some(v => v != null)) {
+          post.tags = mergeWithRegex(null, rt);
+        }
+        // Broker fill-in: only where the regex extractor had no answer, and
+        // only when the ML broker head is confident. Provenance is recorded
+        // so the dashboard/corrections can tell ML-filled tags apart.
+        if ((post.tags?.broker ?? null) === null) {
+          const bf = mlBrokerFill(post.text || '');
+          if (bf !== null) {
+            post.tags = post.tags || { price: null, rooms: null, size: null, roommates: null, broker: null, entry_date: null };
+            post.tags.broker = bf;
+            post.ml_filled = ['broker'];
           }
         }
       }
-      // If regex returns null the post stays unlabeled. Stage 2 (mark-and-correct
-      // mechanism) is the path for surfacing those to the user.
     }
 
     await savePost(post);

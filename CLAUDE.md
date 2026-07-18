@@ -80,7 +80,13 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
 | **lib/notify.js** | Telegram notification plumbing — settings store, `sendTelegram`, `matchesPreferences`, `formatPostMessage`. |
-| **lib/bot.js** | Telegram bot command interface — getUpdates polling, command router, `/start` setup wizard. |
+| **lib/bot.js** | Telegram bot command interface — getUpdates polling, command router, `/start` setup wizard, `/retrain`. |
+| **lib/ml_features.js** | Shared ML tokenizer/scorer — single source of truth for train + runtime. |
+| **lib/ml_classifier.js** | ML runtime — `mlHybridLabel`, `mlBrokerFill`, dynamic weight loading. |
+| **lib/ml_weights.js** | GENERATED bundled weights (by `ml/train.mjs`). Never edit by hand. |
+| **lib/ml_train_core.js** | Pure training machinery (TF-IDF + logistic regression, CV, pruning). |
+| **lib/ml_retrain.js** | In-extension retraining from corrections — used by dashboard 🧠 and `/retrain`. |
+| **ml/** | Offline side: `gold_labels.json` (2,953 gold labels) + `train.mjs` (Node trainer/eval). |
 
 ## Common development tasks
 
@@ -156,7 +162,18 @@ Posts scraped before Gemini was dropped carry its extracted tags. The `ai_classi
 
 ### Async patterns
 
-- **SAVE_POST** → regex classify + tag extract inline (no network) → save → notification check (`notifyIfMatch`, errors never propagate to the save result) → respond.
+- **SAVE_POST** → regex classify → ML hybrid check → tag extract + ML broker fill (all inline, no network) → save → notification check (`notifyIfMatch`, errors never propagate to the save result) → respond.
+
+## ML layer (v2.3.0)
+
+A plain-JS logistic-regression layer (TF-IDF over word+bigram features, Hebrew/Latin/Cyrillic) that rides on top of the regex — no dependencies, no network, runs inline in the service worker.
+
+- **Hybrid classification** (`background.js` SAVE_POST): the regex label stands unless the model is ≥0.9 confident it is wrong (`mlHybridLabel`); when the regex returns null the model decides alone. Overrides get `ai_classified_by: 'ml'` + `ml_prob` and a 🤖 badge on the dashboard. Measured on 5-fold CV over the gold set, hybrid beats regex-alone and model-alone on both accuracy and rental-recall.
+- **Broker fill** (`mlBrokerFill`): where `extractBroker` returns null, a weakly-supervised head (trained on keyword-labeled posts with the keywords MASKED, so it learns agency register) fills `tags.broker` when ≥0.9 confident; provenance in `ml_filled: ['broker']`.
+- **Continuous training**: dashboard 🧠 Retrain ML button and Telegram `/retrain` run `lib/ml_retrain.js::runRetrain` — gathers the shipped gold set (`ml/gold_labels.json`, ids+labels only; texts joined from IDB) plus every `human_label` / `tags_human_override.broker` correction, trains in-extension (~10–30s), and promotes to `chrome.storage.local.ml_weights` ONLY if cross-validated accuracy clears the previous score minus a small epsilon (gold gate). The worker hot-reloads weights via `storage.onChanged`; bundled `lib/ml_weights.js` is the fallback.
+- **Training-data rules (do not weaken):** never train on `ai_label` (the model's own output must not feed back); `human_label` beats the gold file; rejected weights are discarded, never stored.
+- **Retraining offline**: `node ml/train.mjs <export.json>` regenerates `lib/ml_weights.js` and prints the full eval (model vs regex vs hybrid per gold subset). It shares `lib/ml_train_core.js` + `lib/ml_features.js` with the in-extension path, so the two cannot diverge; if the tokenizer changes, bump `FEATURE_VERSION` and retrain (stored weights with a stale version are ignored).
+- **Deferred**: entry_date/price candidate scorers wait until enough value-level corrections accumulate — training them from regex output would just re-encode the regex.
 
 ### Content script origins
 
@@ -187,7 +204,7 @@ Opt-in push alerts: when a scrape saves a **first-time-captured** post that matc
 ### Bot (`lib/bot.js`)
 
 - **No server.** A 30s `chrome.alarms` tick (`tlv-bot-poll`) plus a poll on every worker start calls `getUpdates`; while a conversation is active it switches to 20s long-poll bursts (~2 min after last activity) so wizard answers get near-instant replies.
-- **Commands:** `/start` (bind + 6-step setup wizard), `/reset` (clear prefs + wizard), `/status`, `/on` `/off`, `/cancel` (aborts wizard OR an in-progress correction), `/help`. Finishing the wizard sets `enabled: true`.
+- **Commands:** `/start` (bind + 6-step setup wizard), `/reset` (clear prefs + wizard), `/status`, `/on` `/off`, `/cancel` (aborts wizard OR an in-progress correction), `/retrain` (retrain the ML layer on accumulated corrections — same pipeline as the dashboard 🧠 button), `/help`. Finishing the wizard sets `enabled: true`.
 - **🚩 Miss correction flow (v2.2.0).** Every alert carries a "🚩 Miss" inline button (`callback_data mopen:<post_id>` — post_ids are always short enough for Telegram's 64-byte cap, worst case ~50 bytes). Tapping it opens a field menu (classification / duplicate / price / rooms / size / entry_date / roommates / broker) whose message is edited in place through the whole session (`editTelegramMessage`). The mutation helpers (`applyTagFieldValue`, `applyClassificationValue`, `applyDuplicateValue`) are ports of dashboard.js's tag editor / label buttons / ⊘ Dupe handler — including the similarity pairing on duplicate-mark — writing the same `tags_human_override` / `human_label` / `is_duplicate` / `regex_miss` fields, so phone corrections appear flagged on the dashboard and ride the Export Misses pipeline with zero dashboard changes. Free-text fields ask for a skippable key phrase after the value; duplicate does not (pairing is the evidence, same as the dashboard). Session state lives in `notify_bot_state.correction`; tapping 🚩 Miss again always starts a fresh session, so abandoned sessions never wedge. If the two mutation paths ever diverge from dashboard.js, the miss export becomes inconsistent — change them together.
 - **Auto-bind:** when `chat_id` is empty, the first chat to send `/start` becomes the bound chat; all other chats are dropped silently before command parsing. This replaces the dashboard Detect button as the primary binding path.
 - **First poll drains the backlog** without acting on it (messages sent before the bot was configured must not trigger surprise replies).

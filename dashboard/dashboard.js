@@ -17,6 +17,7 @@ import {
 } from '../lib/db.js';
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
+import { runRetrain, countCorrections } from '../lib/ml_retrain.js';
 
 import { textSimilarity } from '../lib/dedup.js';
 
@@ -262,10 +263,14 @@ function cardHTML(post) {
   else if (post.human_label === 'not_rental') labelTag = '<span class="tag tag--not-rental-human" title="You marked this as not rental">✗ Not rental</span>';
   else if (post.ai_label === 'rental')        labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--rental-ai" title="Regex classified as rental">Regex: Rental</span>'
-    : '<span class="tag tag--rental-ai" title="Auto-labeled (legacy)">Legacy: Rental</span>';
+    : post.ai_classified_by === 'ml'
+      ? `<span class="tag tag--rental-ai" title="ML model classified as rental (confidence ${post.ml_prob ?? '?'}) — overrode or replaced the regex label">🤖 ML: Rental</span>`
+      : '<span class="tag tag--rental-ai" title="Auto-labeled (legacy)">Legacy: Rental</span>';
   else if (post.ai_label === 'not_rental')    labelTag = post.ai_classified_by === 'regex'
     ? '<span class="tag tag--not-rental-ai" title="Regex classified as not rental">Regex: Not rental</span>'
-    : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">Legacy: Not rental</span>';
+    : post.ai_classified_by === 'ml'
+      ? `<span class="tag tag--not-rental-ai" title="ML model classified as not rental (confidence ${post.ml_prob ?? '?'}) — overrode or replaced the regex label">🤖 ML: Not rental</span>`
+      : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">Legacy: Not rental</span>';
 
   // Highlight whichever label button matches the current human label.
   const rentalActive    = post.human_label === 'rental'     ? ' active' : '';
@@ -348,6 +353,55 @@ function updateResultCount() {
       ? `Export Misses (${unexportedMiss})`
       : 'Export Misses';
   }
+  updateRetrainButton();
+}
+
+// Show how many corrections exist for the ML retrain to consume. The count on
+// the button is all correction-carrying posts; retraining is worthwhile
+// whenever it has grown since the last training run.
+function updateRetrainButton() {
+  const btn = el('ml-retrain-btn');
+  if (!btn || btn.dataset.busy) return;
+  const n = countCorrections(allPosts);
+  btn.textContent = n > 0 ? `🧠 Retrain ML (${n})` : '🧠 Retrain ML';
+}
+
+async function retrainMl() {
+  const btn = el('ml-retrain-btn');
+  const n = countCorrections(allPosts);
+  if (!confirm(
+    `Retrain the ML classifier now?\n\n` +
+    `Training data: the shipped gold set + your ${n} corrections ` +
+    `(dashboard labels/✏ and Telegram 🚩 Miss).\n` +
+    `Runs locally (~10-30s). New weights are kept only if they score at ` +
+    `least as well as the current ones.`)) return;
+  btn.dataset.busy = '1';
+  btn.disabled = true;
+  try {
+    const result = await runRetrain(msg => { btn.textContent = `🧠 ${msg}`; });
+    if (result.promoted) {
+      alert(
+        `✅ ML model retrained and promoted.\n\n` +
+        `Cross-validated accuracy: ${(result.cv_accuracy * 100).toFixed(1)}% ` +
+        `(previous: ${(result.previous_cv * 100).toFixed(1)}%)\n` +
+        `Trained on ${result.label_rows} labeled posts ` +
+        `(${result.corrections} of them your corrections) + ` +
+        `${result.broker_rows} broker examples.\n\n` +
+        `New scrapes will classify with the new weights immediately.`);
+    } else {
+      alert(
+        `⚠️ Retrain finished but the new weights were NOT promoted.\n\n` +
+        `${result.reason}\n\n` +
+        `This usually means the new corrections need company — keep marking ` +
+        `misses and try again later.`);
+    }
+  } catch (err) {
+    alert('Retrain failed: ' + (err.message || err));
+  } finally {
+    delete btn.dataset.busy;
+    btn.disabled = false;
+    updateRetrainButton();
+  }
 }
 
 // ── Controls ───────────────────────────────────────────────────────────────────
@@ -384,6 +438,7 @@ function bindControls() {
   el('export-btn').addEventListener('click', exportJSON);
   el('export-misses-btn').addEventListener('click', exportMisses);
   el('retest-regex-btn').addEventListener('click', retestRegex);
+  el('ml-retrain-btn').addEventListener('click', retrainMl);
   el('regex-extract-btn').addEventListener('click', regexExtractAll);
   el('delete-all-btn').addEventListener('click', deleteAllPosts);
 
