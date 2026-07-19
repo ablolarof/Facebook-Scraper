@@ -17,7 +17,7 @@ import {
 } from '../lib/db.js';
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
-import { runRetrain, countCorrections } from '../lib/ml_retrain.js';
+import { runRetrain, countCorrections, countNewCorrections } from '../lib/ml_retrain.js';
 
 import { textSimilarity } from '../lib/dedup.js';
 
@@ -356,23 +356,28 @@ function updateResultCount() {
   updateRetrainButton();
 }
 
-// Show how many corrections exist for the ML retrain to consume. The count on
-// the button is all correction-carrying posts; retraining is worthwhile
-// whenever it has grown since the last training run.
-function updateRetrainButton() {
+// Show how many corrections are waiting to be folded into the ML model.
+// This count is "new since the last PROMOTED retrain" — separate from the
+// ⚑ Miss / Export Misses counter, which tracks "not yet sent to Claude for
+// a regex fix" and is untouched by retraining (see lib/ml_retrain.js header).
+async function updateRetrainButton() {
   const btn = el('ml-retrain-btn');
   if (!btn || btn.dataset.busy) return;
-  const n = countCorrections(allPosts);
-  btn.textContent = n > 0 ? `🧠 Retrain ML (${n})` : '🧠 Retrain ML';
+  const fresh = await countNewCorrections(allPosts);
+  btn.textContent = fresh > 0 ? `🧠 Retrain ML (${fresh} new)` : '🧠 Retrain ML';
+  btn.title = fresh > 0
+    ? `${fresh} correction(s) since the last retrain — click to fold them into the model.`
+    : 'No new corrections since the last retrain.';
 }
 
 async function retrainMl() {
   const btn = el('ml-retrain-btn');
-  const n = countCorrections(allPosts);
+  const total = countCorrections(allPosts);
+  const fresh = await countNewCorrections(allPosts);
   if (!confirm(
     `Retrain the ML classifier now?\n\n` +
-    `Training data: the shipped gold set + your ${n} corrections ` +
-    `(dashboard labels/✏ and Telegram 🚩 Miss).\n` +
+    `Training data: the shipped gold set + all ${total} of your corrections ` +
+    `(dashboard labels/✏ and Telegram 🚩 Miss) — ${fresh} of them new since the last retrain.\n` +
     `Runs locally (~10-30s). New weights are kept only if they score at ` +
     `least as well as the current ones.`)) return;
   btn.dataset.busy = '1';
@@ -385,7 +390,7 @@ async function retrainMl() {
         `Cross-validated accuracy: ${(result.cv_accuracy * 100).toFixed(1)}% ` +
         `(previous: ${(result.previous_cv * 100).toFixed(1)}%)\n` +
         `Trained on ${result.label_rows} labeled posts ` +
-        `(${result.corrections} of them your corrections) + ` +
+        `(${result.corrections} of them your corrections, ${result.new_corrections} new) + ` +
         `${result.broker_rows} broker examples.\n\n` +
         `New scrapes will classify with the new weights immediately.`);
     } else {
@@ -393,7 +398,7 @@ async function retrainMl() {
         `⚠️ Retrain finished but the new weights were NOT promoted.\n\n` +
         `${result.reason}\n\n` +
         `This usually means the new corrections need company — keep marking ` +
-        `misses and try again later.`);
+        `misses and try again later. (Your ⚑ Miss flags are unaffected either way.)`);
     }
   } catch (err) {
     alert('Retrain failed: ' + (err.message || err));

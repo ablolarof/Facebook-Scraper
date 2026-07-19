@@ -15,7 +15,7 @@
     <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
     <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
     <button id="retest-regex-btn" title="Re-run the current regex on all posts and preview what would change before committing">Re-test Regex</button>
-    <button id="ml-retrain-btn" title="Retrain the ML classifier on your corrections (dashboard labels/✏ + Telegram 🚩 Miss). Runs locally in seconds. New weights are kept only if they score at least as well as the current ones on the gold set.">🧠 Retrain ML</button>
+    <button id="ml-retrain-btn" title="Retrain the ML classifier on your corrections (dashboard labels/✏ + Telegram 🚩 Miss). The count shown is corrections since the last retrain — independent of the ⚑ Miss / Export Misses counter, which tracks regex-fix exports separately. Runs locally in seconds; new weights are kept only if they score at least as well as the current ones.">🧠 Retrain ML</button>
     <span class="export-group">
       <select id="export-scope" title="Which posts to include in the JSON export">
         <option value="all">All posts</option>
