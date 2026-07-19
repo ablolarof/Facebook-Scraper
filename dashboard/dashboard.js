@@ -17,7 +17,9 @@ import {
 } from '../lib/db.js';
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
-import { runRetrain, countCorrections, countNewCorrections } from '../lib/ml_retrain.js';
+import {
+  runRetrain, countCorrections, countNewCorrections, goldCoverage, importGoldTexts,
+} from '../lib/ml_retrain.js';
 
 import { textSimilarity } from '../lib/dedup.js';
 
@@ -370,8 +372,45 @@ async function updateRetrainButton() {
     : 'No new corrections since the last retrain.';
 }
 
+// One-time gold-text import for fresh installs: the shipped gold file has
+// ids+labels only (texts are personal data and stay off the repo). If this
+// install's IDB lacks the gold posts, ask the user to pick their dashboard
+// export JSON; the texts are cached in chrome.storage.local, never uploaded.
+function pickLocalFile() {
+  return new Promise(resolve => {
+    const input = Object.assign(document.createElement('input'),
+      { type: 'file', accept: '.json,application/json' });
+    input.addEventListener('change', () => resolve(input.files[0] || null));
+    // 'cancel' fires (Chrome 113+) when the dialog is dismissed.
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
+}
+
+async function ensureGoldTexts() {
+  const cov = await goldCoverage();
+  if (cov.have >= cov.min_required) return true;
+  if (!confirm(
+    `This install only has ${cov.have} of the ${cov.total} gold training texts ` +
+    `(the shipped gold file contains ids+labels only — the texts live in your ` +
+    `main extension's database / export file).\n\n` +
+    `Select your dashboard export JSON (e.g. tlv-rentals-2026-07-18.json) to ` +
+    `import them once. The file stays on this computer.\n\nChoose file now?`)) return false;
+  const file = await pickLocalFile();
+  if (!file) return false;
+  try {
+    const res = await importGoldTexts(await file.text());
+    alert(`✅ Imported ${res.imported} of ${res.gold_total} gold training texts.`);
+    return res.imported >= (await goldCoverage()).min_required;
+  } catch (err) {
+    alert('Import failed: ' + (err.message || err));
+    return false;
+  }
+}
+
 async function retrainMl() {
   const btn = el('ml-retrain-btn');
+  if (!(await ensureGoldTexts())) return;
   const total = countCorrections(allPosts);
   const fresh = await countNewCorrections(allPosts);
   if (!confirm(
@@ -393,6 +432,8 @@ async function retrainMl() {
         `(${result.corrections} of them your corrections, ${result.new_corrections} new) + ` +
         `${result.broker_rows} broker examples.\n\n` +
         `New scrapes will classify with the new weights immediately.`);
+    } else if (result.needs_import) {
+      alert(`⚠️ Retrain refused:\n\n${result.reason}`);
     } else {
       alert(
         `⚠️ Retrain finished but the new weights were NOT promoted.\n\n` +
