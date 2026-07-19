@@ -1,6 +1,6 @@
 # Tel Aviv Facebook Rental Scraper
 
-> A Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental listings from Facebook groups, classifies them with a local regex pipeline, presents them in a filterable dashboard, and (since v2.0.0) pings your phone through your own Telegram bot the moment a new listing matches your preferences — so you can actually find a flat without drowning in posts.
+> A Manifest V3 Chrome extension that scrapes Tel Aviv apartment rental listings from Facebook groups, classifies them with a local regex + machine-learning pipeline (no cloud, no API keys — the model trains and runs inside the extension), presents them in a filterable dashboard, and (since v2.0.0) pings your phone through your own Telegram bot the moment a new listing matches your preferences — so you can actually find a flat without drowning in posts.
 >
 > Vibe-coded with Claude (https://claude.ai) by Anthropic.
 
@@ -32,7 +32,11 @@ This tool is for personal use. Scraping Facebook may be against their Terms of S
 ## Features
 
 - **One-click scraping** — open any Facebook group or feed, click *Scrape This Feed* in the popup, and the extension auto-scrolls and captures posts. Configurable stop conditions (N consecutive duplicates, or a time limit). A continuation banner lets you push past the stop point for 50 more posts or 5 more minutes.
-- **Local-only classification** — every captured post runs through `lib/regex_extractor.js`, a Hebrew/English regex pass that catches `להשכרה`, `שכירות`, `for rent`, monthly-price patterns, and the inverse (`למכירה`, `for sale`). There is no remote API in the loop. Posts the regex can't classify with confidence stay unlabeled until a human handles them.
+- **Local-only classification** — every captured post runs through `lib/regex_extractor.js`, a Hebrew/English regex pass that catches `להשכרה`, `שכירות`, `for rent`, monthly-price patterns, and the inverse (`למכירה`, `for sale`). There is no remote API in the loop.
+- **ML hybrid classification (v2.3.0)** — a plain-JS logistic-regression model (TF-IDF over Hebrew/English/Russian word+bigram features, trained on a 2,953-post hand-verified gold set) rides on top of the regex: the regex label stands unless the model is ≥90% confident it's wrong, and when the regex can't decide, the model decides alone. Measured by cross-validation, the hybrid beats both regex-alone and model-alone on accuracy *and* rental-recall. Posts the model decided carry a 🤖 badge with its confidence.
+- **ML broker detection (v2.3.0)** — where no explicit תיווך keyword exists, a weakly-supervised model head recognizes agency register (signatures, license numbers, listing style) and fills the broker tag when confident — trained with the broker keywords masked out so it learns the register, not the keyword.
+- **Train it yourself, locally (v2.3.0)** — every correction you make (dashboard label buttons / ✏ tag editor / Telegram 🚩 Miss) is training signal. Hit 🧠 *Retrain ML* on the dashboard or send `/retrain` to your bot: the model retrains in-extension in seconds and the new weights are promoted **only** if they score at least as well as the current ones on a fixed gold benchmark. Fresh installs import the gold training texts once from a local export file — nothing is ever uploaded.
+- **Full Marketplace descriptions (v2.4.0)** — pure Marketplace cards only show "₪price · location · title" in the feed; the description exists solely on the listing page, which Facebook renders client-side. The extension now opens each new card-style listing in a background tab, reads the full description from the rendered page, and re-runs dedup/classification/tags/notifications on the complete text.
 - **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), entry date, whether it's a roommate listing, and whether a broker fee applies.
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
 - **Structural post detection** — posts are detected as `role="feed"` child units (with body-anchor and commerce-link fallbacks for surfaces that don't use a feed container, such as `/?filter=all&sk=h_chr`). This catches posts whether or not they have a `data-ad-*` body anchor, and is comment-immune: a comment lives inside its post's card and can never be mistaken for a separate post.
@@ -50,7 +54,7 @@ This tool is for personal use. Scraping Facebook may be against their Terms of S
 - **Permanent delete** — a trash button on each card removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
 - **Delete All** — wipes the entire database so the next scrape starts from a clean slate. Requires explicit confirmation in the dashboard (shows the current post count before you confirm).
 - **Telegram notifications (v2.0.0)** — get an alert on your phone when a scrape captures a **new** post matching your preferences: max price, rooms range, whole-apartment vs. roommates, broker fee, and include/exclude keyword lists (the only location filter — e.g. neighborhood names in Hebrew or English). Matching is recall-biased: a post whose price or rooms could not be extracted is never excluded by that rule. One message per matching post, with price/rooms/size, group name, a text snippet, and the permalink. Duplicates and re-scrapes never re-notify; a failed send retries on the next scrape.
-- **Control the bot from your phone (v2.0.0)** — the bot itself is a control surface: `/start` runs a 6-question setup wizard in the chat, `/reset` clears preferences and starts over, `/status` shows current settings, `/on` `/off` toggle alerts. The first chat to `/start` an unbound bot becomes its owner; every other chat is ignored permanently. No server involved — the extension's service worker polls Telegram, so commands apply while Chrome is running (queued up to 24h otherwise).
+- **Control the bot from your phone (v2.0.0)** — the bot itself is a control surface: `/start` runs a 6-question setup wizard in the chat, `/reset` clears preferences and starts over, `/status` shows current settings, `/on` `/off` toggle alerts, `/retrain` retrains the ML model on your accumulated corrections (v2.3.0). The first chat to `/start` an unbound bot becomes its owner; every other chat is ignored permanently. No server involved — the extension's service worker polls Telegram, so commands apply while Chrome is running (queued up to 24h otherwise). Every alert carries a 🚩 Miss button for correcting the classification or any tag straight from the chat (v2.2.0).
 - **Auto-scrape URL parameter** — appending `?tlv_auto_scrape=1` to a Facebook URL starts a 30-minute scrape automatically after a 4-second render delay. Useful for scheduled-task workflows.
 - **Export JSON** — dump every IndexedDB record to a JSON file for backup or external analysis.
 
@@ -62,7 +66,7 @@ Facebook feed → content scripts (`extractor.js` + `scroller.js` + `content.js`
 
 `background.js` is the only place that:
 - Writes the extension's IndexedDB (content scripts run at `facebook.com` origin and would write Facebook's storage instead)
-- Runs `lib/regex_extractor.js` against incoming posts and saves the result
+- Runs `lib/regex_extractor.js` + the ML hybrid (`lib/ml_classifier.js`) against incoming posts and saves the result
 
 Classification is fully synchronous from the content script's perspective — by the time `SAVE_POST` returns, the post is dedup'd, classified, and saved.
 
