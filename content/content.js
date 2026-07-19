@@ -102,6 +102,37 @@
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Commerce-listing description extraction (PDP pages) ────────────────────
+  // Runs when background.js opens a /commerce/listing/ or /marketplace/item/
+  // page in a background tab. Waits for the client-rendered description,
+  // expanding the "See more" clamp first if present. Selector strategy avoids
+  // Facebook's obfuscated class names entirely: the description is reliably
+  // the longest text-leaf under a span[dir="auto"] (verified live 2026-07-19).
+  async function extractListingDescription() {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const isPdp = /\/commerce\/listing\/|\/marketplace\/item\//.test(location.href);
+    if (!isPdp) return null;
+
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      // Expand the description clamp so the full text is in the DOM.
+      const seeMore = [...document.querySelectorAll('[role="button"]')]
+        .find(b => /^(see more|ראה עוד|הצג עוד)$/i.test((b.textContent || '').trim()));
+      if (seeMore) { seeMore.click(); await sleep(400); }
+
+      const candidates = [...document.querySelectorAll('span[dir="auto"] > span')]
+        .filter(s => s.childElementCount === 0);
+      let best = null;
+      for (const s of candidates) {
+        const t = (s.textContent || '').trim();
+        if (t.length >= 80 && t.length <= 10000 && (!best || t.length > best.length)) best = t;
+      }
+      if (best) return best;
+      await sleep(600);
+    }
+    return null;
+  }
+
   // ── Message listener ───────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
 
@@ -112,6 +143,15 @@
         groupName: getGroupName(),
       });
       return false;
+    }
+
+    // Commerce-listing enrichment (background.js opens this page in a hidden
+    // tab): read the full description from the rendered PDP. The description
+    // is NOT in the feed card DOM and NOT server-rendered in the page HTML —
+    // only the live DOM has it, as the longest leaf under span[dir="auto"].
+    if (msg.type === 'EXTRACT_LISTING_DESCRIPTION') {
+      extractListingDescription().then(description => sendResponse({ description }));
+      return true; // async response
     }
 
     if (msg.type === 'GET_STATS') {

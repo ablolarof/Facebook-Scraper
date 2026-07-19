@@ -123,10 +123,126 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Queue every already-stored card-style commerce post for enrichment
+  // (one-off maintenance, triggered from the dashboard console).
+  if (message.type === 'ENRICH_COMMERCE_BACKFILL') {
+    getAllPosts().then(posts => {
+      const todo = posts.filter(isEnrichable).slice(0, 200);
+      for (const p of todo) queueEnrichment(p.post_id, p.permalink);
+      sendResponse({ queued: todo.length });
+    });
+    return true;
+  }
+
 });
 
+// ── Commerce-listing enrichment ──────────────────────────────────────────────
+// Pure Marketplace cards on the feed carry only "₪price · location · title" —
+// the description exists ONLY on the listing page (/commerce/listing/…), and
+// that page is fully client-rendered (nothing useful in its HTML, verified
+// live 2026-07-19). So: open the listing in a background tab, let the content
+// script read the rendered description, close the tab, and re-save the post
+// through handleSavePost so classification/tags/dedup all see the full text.
+// Serial queue with a courtesy delay — a scrape yields at most a handful of
+// new card-style listings.
+
+const enrichQueue = [];
+let enrichRunning = false;
+
+function isEnrichable(post) {
+  if (!post || !post.permalink) return false;
+  if (!/^(cl_|mp_)/.test(String(post.post_id))) return false;
+  if (post.listing_enriched_at || post.enrich_failed_at) return false;
+  const text = (post.text || '').trim();
+  // Card-style summary: starts with a price (or FREE), or is just very short.
+  return /^(₪|FREE)/.test(text) || text.length < 200;
+}
+
+function queueEnrichment(postId, permalink) {
+  if (enrichQueue.some(job => job.postId === postId)) return;
+  enrichQueue.push({ postId, permalink });
+  processEnrichQueue();
+}
+
+async function processEnrichQueue() {
+  if (enrichRunning) return;
+  enrichRunning = true;
+  try {
+    while (enrichQueue.length > 0) {
+      const job = enrichQueue.shift();
+      try {
+        await enrichOne(job);
+      } catch (err) {
+        console.warn(`[TLV Rentals] Enrichment failed for ${job.postId}:`, err);
+        await stampEnrichFailure(job.postId);
+      }
+      await new Promise(r => setTimeout(r, 2000)); // be gentle
+    }
+  } finally {
+    enrichRunning = false;
+  }
+}
+
+async function enrichOne({ postId, permalink }) {
+  const record = await getPost(postId);
+  if (!record || !isEnrichable(record)) return;
+
+  const tab = await chrome.tabs.create({ url: permalink, active: false });
+  let description = null;
+  try {
+    // The content script needs time to load and the PDP to render; retry the
+    // message until it answers or the budget runs out.
+    const deadline = Date.now() + 25000;
+    while (Date.now() < deadline && description == null) {
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const res = await chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_LISTING_DESCRIPTION' });
+        if (res && 'description' in res) { description = res.description; break; }
+      } catch { /* content script not ready yet — retry */ }
+    }
+  } finally {
+    chrome.tabs.remove(tab.id).catch(() => {});
+  }
+
+  if (!description || description.trim().length < 80) {
+    await stampEnrichFailure(postId);
+    return;
+  }
+
+  // Description first (position-sensitive classification rules read the top),
+  // original card line (price · location · title) preserved at the end.
+  const cardLine = (record.text || '').trim();
+  record.text = description.trim() + (cardLine ? '\n\n' + cardLine : '');
+  record.listing_enriched_at = new Date().toISOString();
+  // Force re-classification on the full text (human labels always win and
+  // are checked inside handleSavePost).
+  if (!record.human_label) {
+    record.ai_label = null;
+    record.ai_classified_by = null;
+    record.ai_classified_at = null;
+    record.tags = null;
+    record.ml_filled = null;
+  }
+  // Re-save through the full pipeline: dedup hash/prefix recompute, hybrid
+  // classification, tag extraction, broker fill. forceNotifyCheck lets a
+  // now-matching post alert even though it is not a new record (notified_at
+  // is carried over, so an already-alerted post can never alert twice).
+  await handleSavePost(record, { forceNotifyCheck: true });
+  console.log(`[TLV Rentals] Enriched commerce listing ${postId} (+${description.length} chars)`);
+}
+
+async function stampEnrichFailure(postId) {
+  try {
+    const record = await getPost(postId);
+    if (record && !record.listing_enriched_at) {
+      record.enrich_failed_at = new Date().toISOString();
+      await savePost(record);
+    }
+  } catch { /* best effort */ }
+}
+
 // ── Save + dedup + regex classify ────────────────────────────────────────────
-async function handleSavePost(post) {
+async function handleSavePost(post, opts = {}) {
   try {
     const dedupHash = await computeDedupHash({
       text:       post.text,
@@ -246,10 +362,14 @@ async function handleSavePost(post) {
     // Telegram notification check. Never lets an error propagate into the
     // save result — the post is already safely stored at this point.
     try {
-      await notifyIfMatch(post, wasNewRecord);
+      await notifyIfMatch(post, wasNewRecord || opts.forceNotifyCheck === true);
     } catch (err) {
       console.warn('[TLV Rentals] Notification check failed:', err);
     }
+
+    // Card-style commerce posts get their full description fetched from the
+    // listing page in the background (queue is serial; never blocks the save).
+    if (isEnrichable(post)) queueEnrichment(post.post_id, post.permalink);
 
     return { ok: true, is_duplicate: post.is_duplicate, is_new_record: wasNewRecord };
 
