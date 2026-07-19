@@ -199,9 +199,26 @@ function sortNullsLast(a, b, dir) {
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────────────
+// Cards render in chunks. Building thousands of card nodes in one innerHTML
+// assignment is what made the dashboard crawl as the DB grew — the first
+// chunk paints instantly and an IntersectionObserver on a sentinel appends
+// the next chunk whenever the user scrolls near the bottom. filteredPosts is
+// untouched: filtering, the result count, and exports still see everything.
+// Re-renders triggered by card actions (label/edit/dupe) keep the current
+// depth so the user doesn't lose their place mid-list.
+const RENDER_CHUNK = 60;
+let renderedCount  = 0;
+let renderObserver = null;
+let renderSentinel = null;
+
 function renderCards() {
   const grid  = el('card-grid');
   const empty = el('empty-state');
+
+  if (renderObserver) { renderObserver.disconnect(); renderObserver = null; }
+  if (renderSentinel) { renderSentinel.remove(); renderSentinel = null; }
+  const keepDepth = Math.max(RENDER_CHUNK, Math.min(renderedCount, filteredPosts.length));
+  renderedCount = 0;
 
   if (filteredPosts.length === 0) {
     grid.innerHTML = '';
@@ -209,7 +226,28 @@ function renderCards() {
     return;
   }
   empty.classList.add('hidden');
-  grid.innerHTML = filteredPosts.map(cardHTML).join('');
+  grid.innerHTML = '';
+  appendCardChunk(grid, keepDepth);
+}
+
+function appendCardChunk(grid, count = RENDER_CHUNK) {
+  if (renderObserver) { renderObserver.disconnect(); renderObserver = null; }
+  if (renderSentinel) { renderSentinel.remove(); renderSentinel = null; }
+
+  const next = filteredPosts.slice(renderedCount, renderedCount + count);
+  renderedCount += next.length;
+  grid.insertAdjacentHTML('beforeend', next.map(cardHTML).join(''));
+
+  if (renderedCount < filteredPosts.length) {
+    renderSentinel = document.createElement('div');
+    renderSentinel.style.cssText = 'grid-column:1/-1;text-align:center;padding:16px;color:#888;';
+    renderSentinel.textContent = `Loading more… (${renderedCount} of ${filteredPosts.length})`;
+    grid.appendChild(renderSentinel);
+    renderObserver = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) appendCardChunk(grid);
+    }, { rootMargin: '600px' });
+    renderObserver.observe(renderSentinel);
+  }
 }
 
 function cardHTML(post) {
