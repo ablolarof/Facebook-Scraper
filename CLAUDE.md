@@ -19,6 +19,8 @@ Hand the user paste-ready snippets — DevTools console blocks against the live 
 
 This applies to every stage of the project — bug fixes, refactors, new features. Skipping the diagnostic step has historically led to rewrites and lost work.
 
+**Extension name per worktree.** The user runs each git worktree as a separate unpacked extension install (own IndexedDB) so parallel work streams don't collide. `manifest.json`'s `"name"` field should reflect that: on `main`, it stays exactly `"TLV Rentals"`. In any other worktree, rename it locally (uncommitted — never push a worktree rename to `main`) to `"TLV Rentals - <Thing>"`, where `<Thing>` names what that worktree is for, e.g. `"TLV Rentals - Redesign"` for a dashboard-redesign worktree, `"TLV Rentals - Telegram"` for Telegram-feature work. This makes `chrome://extensions` unambiguous when several unpacked installs are loaded side by side.
+
 ## Active plan
 
 These stages are sequential.
