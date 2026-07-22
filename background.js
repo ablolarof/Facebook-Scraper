@@ -149,6 +149,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 const enrichQueue = [];
 let enrichRunning = false;
 
+// Throttle + block handling (added 2026-07-20 after Facebook temp-blocked the
+// /commerce/listing/ surface: the 2s gap sustained 10-29 listing opens/hour
+// for two days). Chrome.storage keys:
+//   enrich_cooldown_until — epoch ms; all enrichment paused until then. Set
+//                           for 6h whenever the block interstitial is seen.
+//   enrich_open_times     — epoch-ms list of listing opens in the last hour,
+//                           enforcing the hourly cap across worker restarts.
+const ENRICH_DELAY_MS     = 30000;             // base gap between listing opens
+const ENRICH_DELAY_JITTER = 15000;             // + random 0..this
+const ENRICH_HOURLY_CAP   = 20;                // max opens per rolling hour
+const ENRICH_COOLDOWN_MS  = 6 * 3600 * 1000;   // pause after a block page
+
+async function enrichCooldownRemaining() {
+  const { enrich_cooldown_until = 0 } = await chrome.storage.local.get('enrich_cooldown_until');
+  return Math.max(0, enrich_cooldown_until - Date.now());
+}
+
+async function enrichHourlyBudgetLeft() {
+  const cutoff = Date.now() - 3600 * 1000;
+  const { enrich_open_times = [] } = await chrome.storage.local.get('enrich_open_times');
+  return ENRICH_HOURLY_CAP - enrich_open_times.filter(t => t > cutoff).length;
+}
+
+async function recordEnrichOpen() {
+  const cutoff = Date.now() - 3600 * 1000;
+  const { enrich_open_times = [] } = await chrome.storage.local.get('enrich_open_times');
+  const times = enrich_open_times.filter(t => t > cutoff);
+  times.push(Date.now());
+  await chrome.storage.local.set({ enrich_open_times: times });
+}
+
 function isEnrichable(post) {
   if (!post || !post.permalink) return false;
   if (!/^(cl_|mp_)/.test(String(post.post_id))) return false;
@@ -169,14 +200,34 @@ async function processEnrichQueue() {
   enrichRunning = true;
   try {
     while (enrichQueue.length > 0) {
+      const cooldown = await enrichCooldownRemaining();
+      if (cooldown > 0) {
+        console.warn(`[TLV Rentals] Enrichment paused for ${Math.ceil(cooldown / 60000)} more min (Facebook block cooldown). Dropping ${enrichQueue.length} queued job(s) — unstamped posts re-queue on the next scrape.`);
+        enrichQueue.length = 0;
+        break;
+      }
+      if ((await enrichHourlyBudgetLeft()) <= 0) {
+        console.warn(`[TLV Rentals] Enrichment hourly cap (${ENRICH_HOURLY_CAP}) reached. Dropping ${enrichQueue.length} queued job(s) — unstamped posts re-queue on the next scrape.`);
+        enrichQueue.length = 0;
+        break;
+      }
       const job = enrichQueue.shift();
       try {
         await enrichOne(job);
       } catch (err) {
         console.warn(`[TLV Rentals] Enrichment failed for ${job.postId}:`, err);
-        await stampEnrichFailure(job.postId);
+        await stampEnrichFailure(job.postId, 'error: ' + (err && err.message || err));
       }
-      await new Promise(r => setTimeout(r, 2000)); // be gentle
+      // Jittered gap between listing opens. Slept in short chunks with a
+      // storage touch between them — one long setTimeout would let Chrome
+      // kill the idle MV3 worker mid-wait and lose the queue.
+      let wait = ENRICH_DELAY_MS + Math.floor(Math.random() * ENRICH_DELAY_JITTER);
+      while (wait > 0 && enrichQueue.length > 0) {
+        const chunk = Math.min(wait, 10000);
+        await new Promise(r => setTimeout(r, chunk));
+        await chrome.storage.local.get('enrich_cooldown_until'); // worker keepalive
+        wait -= chunk;
+      }
     }
   } finally {
     enrichRunning = false;
@@ -187,25 +238,38 @@ async function enrichOne({ postId, permalink }) {
   const record = await getPost(postId);
   if (!record || !isEnrichable(record)) return;
 
+  await recordEnrichOpen();
   const tab = await chrome.tabs.create({ url: permalink, active: false });
-  let description = null;
+  let result = null;
   try {
     // The content script needs time to load and the PDP to render; retry the
-    // message until it answers or the budget runs out.
+    // message until it answers or the budget runs out. Any object response is
+    // terminal: {description}, {blocked:true}, or {description:null, reason}
+    // (the content side already waited out its own render deadline).
     const deadline = Date.now() + 25000;
-    while (Date.now() < deadline && description == null) {
+    while (Date.now() < deadline && result == null) {
       await new Promise(r => setTimeout(r, 1500));
       try {
         const res = await chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_LISTING_DESCRIPTION' });
-        if (res && 'description' in res) { description = res.description; break; }
+        if (res && (res.description != null || res.blocked || res.reason)) { result = res; break; }
       } catch { /* content script not ready yet — retry */ }
     }
   } finally {
     chrome.tabs.remove(tab.id).catch(() => {});
   }
 
+  if (result && result.blocked) {
+    // Facebook's rate-limit interstitial. The listing itself is fine — do NOT
+    // stamp it failed. Pause everything and let it retry after the cooldown.
+    const until = Date.now() + ENRICH_COOLDOWN_MS;
+    await chrome.storage.local.set({ enrich_cooldown_until: until });
+    console.warn(`[TLV Rentals] Facebook "temporarily blocked" page detected on ${postId} — pausing ALL enrichment until ${new Date(until).toLocaleString()}. Post not stamped; it will retry after the cooldown.`);
+    return;
+  }
+
+  const description = result && result.description;
   if (!description || description.trim().length < 80) {
-    await stampEnrichFailure(postId);
+    await stampEnrichFailure(postId, (result && result.reason) || 'no_response_within_budget');
     return;
   }
 
@@ -231,11 +295,12 @@ async function enrichOne({ postId, permalink }) {
   console.log(`[TLV Rentals] Enriched commerce listing ${postId} (+${description.length} chars)`);
 }
 
-async function stampEnrichFailure(postId) {
+async function stampEnrichFailure(postId, reason) {
   try {
     const record = await getPost(postId);
     if (record && !record.listing_enriched_at) {
-      record.enrich_failed_at = new Date().toISOString();
+      record.enrich_failed_at     = new Date().toISOString();
+      record.enrich_failed_reason = String(reason || 'unknown').slice(0, 300);
       await savePost(record);
     }
   } catch { /* best effort */ }

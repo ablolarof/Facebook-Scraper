@@ -108,13 +108,28 @@
   // expanding the "See more" clamp first if present. Selector strategy avoids
   // Facebook's obfuscated class names entirely: the description is reliably
   // the longest text-leaf under a span[dir="auto"] (verified live 2026-07-19).
+  // Returns { description } on success, { description: null, blocked: true }
+  // when Facebook's rate-limit interstitial is showing (the worker pauses the
+  // whole queue — the listing itself is fine and must NOT be stamped failed),
+  // or { description: null, reason } on a real failure so the worker can
+  // record WHY (before 2026-07-20 failures were stamped with no cause and the
+  // ~97% failure rate went unnoticed).
   async function extractListingDescription() {
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const isPdp = /\/commerce\/listing\/|\/marketplace\/item\//.test(location.href);
-    if (!isPdp) return null;
+    if (!isPdp) return { description: null, reason: 'not_pdp: ' + location.pathname };
 
     const deadline = Date.now() + 15000;
+    let lastMeta = 'page never produced candidates';
     while (Date.now() < deadline) {
+      const pageText = (document.body && document.body.innerText) || '';
+      if (/temporarily blocked|נחסמת באופן זמני|חסימה זמנית/i.test(pageText)) {
+        return { description: null, blocked: true };
+      }
+      if (/listing isn'?t available|no longer available|content isn'?t available|התוכן אינו זמין|המודעה אינה זמינה/i.test(pageText)) {
+        return { description: null, reason: 'listing_unavailable' };
+      }
+
       // Expand the description clamp so the full text is in the DOM.
       const seeMore = [...document.querySelectorAll('[role="button"]')]
         .find(b => /^(see more|ראה עוד|הצג עוד)$/i.test((b.textContent || '').trim()));
@@ -127,10 +142,14 @@
         const t = (s.textContent || '').trim();
         if (t.length >= 80 && t.length <= 10000 && (!best || t.length > best.length)) best = t;
       }
-      if (best) return best;
+      if (best) return { description: best };
+      let longest = 0;
+      for (const s of candidates) longest = Math.max(longest, (s.textContent || '').trim().length);
+      lastMeta = 'candidates=' + candidates.length + ' longest=' + longest
+               + ' title="' + (document.title || '').slice(0, 60) + '"';
       await sleep(600);
     }
-    return null;
+    return { description: null, reason: 'timeout: ' + lastMeta };
   }
 
   // ── Message listener ───────────────────────────────────────────────────────
@@ -150,7 +169,7 @@
     // is NOT in the feed card DOM and NOT server-rendered in the page HTML —
     // only the live DOM has it, as the longest leaf under span[dir="auto"].
     if (msg.type === 'EXTRACT_LISTING_DESCRIPTION') {
-      extractListingDescription().then(description => sendResponse({ description }));
+      extractListingDescription().then(result => sendResponse(result));
       return true; // async response
     }
 
