@@ -14,8 +14,8 @@
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard.
 
-import { savePost, findByDedupHash, findByPrefixKey, countPosts, getPost, getAllPosts } from './lib/db.js';
-import { computeDedupHash, computePrefixKey, textSimilarity } from './lib/dedup.js';
+import { savePost, findByDedupHash, findByPrefixKey, findAllBySuffixKey, countPosts, getPost, getAllPosts } from './lib/db.js';
+import { computeDedupHash, computePrefixKey, computeSuffixKey, textSimilarity } from './lib/dedup.js';
 import { regexClassifyPost, regexExtractTags, mergeWithRegex }
   from './lib/regex_extractor.js';
 import { getNotifySettings, sendTelegram, formatPostMessage, matchesPreferences }
@@ -52,39 +52,62 @@ pollBot();
 chrome.storage.local.remove(['gemini_api_key', 'gemini_daily_count']).catch(() => {});
 
 // ── One-time dedup maintenance sweep ─────────────────────────────────────────
-// Repairs two historic dedup gaps (2026-07-17 dupe-miss report):
-//   1. Rows scraped before v1.4.0 have no prefix_key field, so they are
-//      invisible to the prefix index — backfill it.
+// Repairs historic dedup gaps found via the dupe-miss report / Export Misses:
+//   1. Rows scraped before v1.4.0 have no prefix_key (or, before this sweep's
+//      v2, no suffix_key) field, so they are invisible to those indexes —
+//      backfill both.
 //   2. Duplicates that entered the DB unmarked (self-shadowing index.get bug,
-//      or saved before their family's original existed) are never re-examined
-//      — retro-mark them. Within each prefix family the earliest clean post
-//      stays the original; later ones are marked only when whole-text
-//      similarity >= 0.55, which spares broker-template posts that share an
-//      opening line but describe different apartments.
-// Guarded by a storage flag so it runs once per profile.
+//      a repost sharing only its CLOSING lines with the original — the
+//      2026-07-25 report's dominant pattern — or saved before their family's
+//      original existed) are never re-examined — retro-mark them.
+// Posts are grouped by prefix_key OR suffix_key (union-find, so a chain of
+// partial matches collapses into one family), the earliest clean post in
+// each family stays the original, and later members are marked only when
+// whole-text similarity >= 0.55 — the gate that spares broker-template posts
+// sharing an opening/closing line but describing different apartments.
+// Guarded by a storage flag so each sweep version runs once per profile.
 async function dedupMaintenanceSweep() {
-  const { dedup_sweep_v1 } = await chrome.storage.local.get('dedup_sweep_v1');
-  if (dedup_sweep_v1) return;
+  const { dedup_sweep_v2 } = await chrome.storage.local.get('dedup_sweep_v2');
+  if (dedup_sweep_v2) return;
   const posts = await getAllPosts();
 
   let backfilled = 0;
   for (const p of posts) {
-    if (p.prefix_key === undefined) {
-      p.prefix_key = computePrefixKey(p.text || '');
-      await savePost(p);
-      backfilled++;
+    let changed = false;
+    if (p.prefix_key === undefined) { p.prefix_key = computePrefixKey(p.text || ''); changed = true; }
+    if (p.suffix_key === undefined) { p.suffix_key = computeSuffixKey(p.text || ''); changed = true; }
+    if (changed) { await savePost(p); backfilled++; }
+  }
+
+  // Union-find over post indexes, connected by a shared prefix_key OR suffix_key.
+  const idx    = new Map(posts.map((p, i) => [p.post_id, i]));
+  const parent = posts.map((_, i) => i);
+  const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+
+  for (const key of ['prefix_key', 'suffix_key']) {
+    const byKey = new Map();
+    for (const p of posts) {
+      const k = p[key];
+      if (!k) continue;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(idx.get(p.post_id));
+    }
+    for (const members of byKey.values()) {
+      for (let i = 1; i < members.length; i++) union(members[0], members[i]);
     }
   }
 
-  const families = new Map();
-  for (const p of posts) {
-    if (!p.prefix_key) continue;
-    if (!families.has(p.prefix_key)) families.set(p.prefix_key, []);
-    families.get(p.prefix_key).push(p);
+  const groups = new Map();
+  for (let i = 0; i < posts.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(posts[i]);
   }
 
   let marked = 0;
-  for (const list of families.values()) {
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
     const clean = list.filter(p => !p.is_duplicate)
                       .sort((a, b) => (a.scraped_at || '').localeCompare(b.scraped_at || ''));
     if (clean.length < 2) continue;
@@ -99,8 +122,8 @@ async function dedupMaintenanceSweep() {
     }
   }
 
-  await chrome.storage.local.set({ dedup_sweep_v1: new Date().toISOString() });
-  console.log(`[TLV Rentals] Dedup sweep: ${backfilled} prefix keys backfilled, ${marked} retroactive duplicates marked`);
+  await chrome.storage.local.set({ dedup_sweep_v2: new Date().toISOString() });
+  console.log(`[TLV Rentals] Dedup sweep: ${backfilled} keys backfilled, ${marked} retroactive duplicates marked`);
 }
 dedupMaintenanceSweep().catch(err => console.warn('[TLV Rentals] Dedup sweep failed:', err));
 
@@ -333,6 +356,7 @@ async function handleSavePost(post, opts = {}) {
 
     post.dedup_hash       = dedupHash;
     post.prefix_key       = computePrefixKey(post.text || '');  // null for very short posts
+    post.suffix_key       = computeSuffixKey(post.text || '');  // null for very short posts
     post.human_label      = post.human_label      ?? null;
     post.ai_label         = post.ai_label         ?? null;
     post.ai_classified_at = post.ai_classified_at ?? null;
@@ -381,6 +405,32 @@ async function handleSavePost(post, opts = {}) {
         post.ai_label         = prefixMatch.ai_label         ?? null;
         post.ai_classified_at = prefixMatch.ai_classified_at ?? null;
         post.ai_classified_by = prefixMatch.ai_classified_by ?? null;
+      }
+    }
+
+    // ── Suffix-key near-duplicate check ──────────────────────────────────────
+    // Catches reposts that edited the HEADLINE (defeating prefix_key) but kept
+    // the closing lines — location/conditions/contact — intact (the dominant
+    // pattern in the 2026-07-25 dupe-miss report). A shared suffix is a much
+    // weaker signal than a shared prefix (broker templates recur across
+    // different apartments), so every candidate is scored by whole-text
+    // similarity and only a >= 0.55 match is accepted — the same gate the
+    // maintenance sweep and manual ⊘ Dupe pairing use.
+    if (!post.is_duplicate && post.suffix_key) {
+      const candidates = await findAllBySuffixKey(post.suffix_key, post.post_id);
+      let best = null, bestScore = 0;
+      for (const c of candidates) {
+        if (c.is_duplicate) continue;
+        const s = textSimilarity(post.text || '', c.text || '');
+        if (s > bestScore) { bestScore = s; best = c; }
+      }
+      if (best && bestScore >= 0.55) {
+        console.log(`[TLV Rentals] Suffix duplicate: ${post.post_id} → ${best.post_id} (sim ${bestScore.toFixed(2)})`);
+        post.is_duplicate     = true;
+        post.duplicate_of     = best.post_id;
+        post.ai_label         = best.ai_label         ?? null;
+        post.ai_classified_at = best.ai_classified_at ?? null;
+        post.ai_classified_by = best.ai_classified_by ?? null;
       }
     }
 
