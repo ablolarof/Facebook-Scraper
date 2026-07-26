@@ -40,6 +40,9 @@ tlv-regex-misses-*.txt
 scratch/
 tmp/
 
+# ── Local devtools backend (regex/ML visualizer, never shipped) ────────────
+devtools/
+
 # ── Claude Code internal state ──────────────────────────────────────────────
 .claude/
 

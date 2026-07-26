@@ -26,6 +26,8 @@ import { textSimilarity } from '../lib/dedup.js';
 import { getNotifySettings, saveNotifySettings, sendTelegram, detectChatId }
   from '../lib/notify.js';
 
+import { activeMlMeta } from '../lib/ml_classifier.js';
+
 let allPosts      = [];   // every record from IndexedDB
 let filteredPosts = [];   // subset after applying sidebar filters
 const expandedPostIds = new Set(); // post_ids whose full text is currently visible
@@ -46,19 +48,11 @@ async function loadPosts() {
 
 // ── Filter logic ──────────────────────────────────────────────────────────────
 function readFilters() {
-  const statuses          = checkedValues('status');
   const labels            = checkedValues('label');        // 'rental' | 'not_rental' | 'unlabeled'
   const labelSources      = checkedValues('label-source'); // 'human' | 'ai'
-  // Posted-within / scraped-within are independent filters. Blank input = no
-  // filter on that axis. Both can be active simultaneously (AND).
-  const postedDaysRaw     = el('posted-days-filter').value.trim();
-  const scrapedDaysRaw    = el('scraped-days-filter').value.trim();
-  const postedDays        = postedDaysRaw  === '' ? null : (parseInt(postedDaysRaw)  || null);
-  const scrapedDays       = scrapedDaysRaw === '' ? null : (parseInt(scrapedDaysRaw) || null);
   const searchText        = el('text-search').value.trim().toLowerCase();
   const showDupes         = el('show-dupes').checked;
   const onlyMisses        = el('show-only-misses').checked;
-  const sort              = el('sort-by').value;
   const priceMin          = parseFloat(el('price-min').value)  || null;
   const priceMax          = parseFloat(el('price-max').value)  || null;
   const roomsMin          = parseFloat(el('rooms-min').value)  || null;
@@ -69,9 +63,9 @@ function readFilters() {
   const entryDateTo        = el('entry-date-to').value   || null;
   const entryDateUnknown   = el('entry-date-unknown').checked;
   const entryDateImmediate = el('entry-date-immediate').checked;
-  return { statuses, labels, labelSources, postedDays, scrapedDays,
+  return { labels, labelSources,
            searchText, showDupes, onlyMisses,
-           sort, priceMin, priceMax, roomsMin, roomsMax,
+           priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
            entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate };
 }
@@ -94,24 +88,10 @@ function applyFilters() {
   const f = readFilters();
 
   filteredPosts = allPosts.filter(p => {
-    if (!f.statuses.includes(p.status || 'new')) return false;
     if (!f.showDupes && p.is_duplicate) return false;
     if (f.onlyMisses && !p.regex_miss) return false;
     if (!f.labels.includes(effectiveLabel(p, f.labelSources))) return false;
     if (f.searchText && !(p.text || '').toLowerCase().includes(f.searchText)) return false;
-
-    // Independent time filters. Each axis filters against its own timestamp.
-    // Posts missing posted_at slip through the posted-within filter — Facebook's
-    // "Xy ago" string occasionally fails to parse, and hiding those posts would
-    // make recently-scraped items vanish for opaque reasons.
-    if (f.postedDays != null) {
-      const postedTs = p.posted_at ? new Date(p.posted_at).getTime() : 0;
-      if (postedTs && postedTs < Date.now() - f.postedDays * 86400 * 1000) return false;
-    }
-    if (f.scrapedDays != null) {
-      const scrapedTs = p.scraped_at ? new Date(p.scraped_at).getTime() : 0;
-      if (scrapedTs && scrapedTs < Date.now() - f.scrapedDays * 86400 * 1000) return false;
-    }
 
     // ── Tag-based filters (skip posts with no tags when a tag filter is active) ──
     if (f.priceMin !== null) {
@@ -168,34 +148,13 @@ function applyFilters() {
     return true;
   });
 
-  // ── Sort ────────────────────────────────────────────────────────────────────
-  // Scrape-based sorts are the default; posted-based are explicit so users can
-  // pick whichever timestamp matters to them (e.g. "newest in my feed" vs
-  // "freshest listings on Facebook").
-  filteredPosts.sort((a, b) => {
-    switch (f.sort) {
-      case 'oldest-scraped': return (a.scraped_at || '').localeCompare(b.scraped_at || '');
-      case 'newest-posted':  return (b.posted_at  || '').localeCompare(a.posted_at  || '');
-      case 'oldest-posted':  return (a.posted_at  || '').localeCompare(b.posted_at  || '');
-      case 'price-asc':      return sortNullsLast(a.tags?.price, b.tags?.price,  1);
-      case 'price-desc':     return sortNullsLast(a.tags?.price, b.tags?.price, -1);
-      case 'rooms-asc':      return sortNullsLast(a.tags?.rooms, b.tags?.rooms,  1);
-      case 'rooms-desc':     return sortNullsLast(a.tags?.rooms, b.tags?.rooms, -1);
-      case 'newest-scraped':
-      default:               return (b.scraped_at || '').localeCompare(a.scraped_at || '');
-    }
-  });
+  // Sort control was removed from the sidebar — always newest-scraped first
+  // (matches the load-time sort in loadPosts(), so this is a no-op stabilizer
+  // for filteredPosts specifically after card actions mutate allPosts in place).
+  filteredPosts.sort((a, b) => (b.scraped_at || '').localeCompare(a.scraped_at || ''));
 
   renderCards();
   updateResultCount();
-}
-
-// Numeric sort that pushes nulls to the end regardless of direction.
-function sortNullsLast(a, b, dir) {
-  if (a == null && b == null) return 0;
-  if (a == null) return 1;
-  if (b == null) return -1;
-  return (a - b) * dir;
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────────────
@@ -381,12 +340,8 @@ function cardHTML(post) {
 }
 
 function updateResultCount() {
-  const labeled        = allPosts.filter(p => p.human_label).length;
-  const aiLabeled      = allPosts.filter(p => !p.human_label && p.ai_label).length;
   const unexportedMiss = allPosts.filter(p => p.regex_miss && !p.regex_miss.exported_at).length;
-  el('result-count').textContent =
-    `Showing ${filteredPosts.length} of ${allPosts.length} posts ` +
-    `· ${labeled} human-labeled · ${aiLabeled} AI-labeled`;
+  el('result-count').textContent = `Showing ${filteredPosts.length} of ${allPosts.length}`;
   const exportMissBtn = el('export-misses-btn');
   if (exportMissBtn) {
     exportMissBtn.textContent = unexportedMiss > 0
@@ -492,17 +447,14 @@ async function retrainMl() {
 function bindControls() {
   // Sidebar inputs that should re-filter on change.
   document.querySelectorAll(
-    'input[name="status"], input[name="label"], input[name="label-source"], ' +
+    'input[name="label"], input[name="label-source"], ' +
     'input[name="roommates-filter"], input[name="broker-filter"], ' +
-    '#show-dupes, #show-only-misses, #posted-days-filter, #scraped-days-filter, #sort-by, ' +
+    '#show-dupes, #show-only-misses, ' +
     '#entry-date-unknown, #entry-date-immediate'
   ).forEach(input => input.addEventListener('change', applyFilters));
 
   // Number inputs should also re-filter on every keystroke (consistent with
   // price/rooms range below) so users see results update as they type.
-  el('posted-days-filter').addEventListener('input',  applyFilters);
-  el('scraped-days-filter').addEventListener('input', applyFilters);
-
   el('entry-date-from').addEventListener('input', applyFilters);
   el('entry-date-to').addEventListener('input',   applyFilters);
 
@@ -520,6 +472,7 @@ function bindControls() {
   });
 
   el('export-btn').addEventListener('click', exportJSON);
+  el('devtools-sync-btn').addEventListener('click', syncToDevtools);
   el('export-misses-btn').addEventListener('click', exportMisses);
   el('retest-regex-btn').addEventListener('click', retestRegex);
   el('ml-retrain-btn').addEventListener('click', retrainMl);
@@ -894,9 +847,6 @@ async function saveTagEdits(post, cardEl) {
 }
 
 function resetFilters() {
-  document.querySelectorAll('input[name="status"]').forEach(cb => {
-    cb.checked = cb.value === 'new' || cb.value === 'interested';
-  });
   document.querySelectorAll('input[name="label"]').forEach(cb => {
     cb.checked = cb.value === 'rental' || cb.value === 'unlabeled';
   });
@@ -907,9 +857,6 @@ function resetFilters() {
   el('entry-date-to').value            = '';
   el('entry-date-unknown').checked     = true;
   el('entry-date-immediate').checked   = true;
-  el('posted-days-filter').value  = '30';
-  el('scraped-days-filter').value = '';   // no scrape-time filter by default
-  el('sort-by').value             = 'newest-scraped';
   el('text-search').value = '';
   el('price-min').value   = '';
   el('price-max').value          = '';
@@ -989,6 +936,37 @@ async function exportJSON() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ── Sync to local devtools backend ────────────────────────────────────────────
+//
+// Pushes the full in-memory post list to a local Node server (devtools/,
+// gitignored, not part of the shipped extension) that visualizes regex/ML
+// reasoning and stats. Manual, button-triggered only — never wired into the
+// scrape/save path, so a stopped or missing devtools server can't affect
+// scraping. `ml_meta` lets the backend flag when the extension is running
+// retrained weights that differ from the bundled lib/ml_weights.js it reads
+// directly (it has no access to chrome.storage.local from Node).
+async function syncToDevtools() {
+  try {
+    const res = await fetch('http://localhost:8787/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        posts: allPosts,
+        ml_meta: activeMlMeta(),
+        synced_at: new Date().toISOString(),
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { count } = await res.json();
+    alert(`Synced ${count ?? allPosts.length} posts to the devtools backend.`);
+  } catch (err) {
+    alert(
+      `Couldn't reach the devtools backend at localhost:8787.\n` +
+      `Is it running? (node devtools/server.mjs)\n\n${err.message}`
+    );
+  }
 }
 
 // ── Auto regex process (runs silently on every load / refresh) ───────────────

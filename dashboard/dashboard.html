@@ -28,8 +28,8 @@
       </select>
       <button id="export-btn">Export JSON</button>
     </span>
+    <button id="devtools-sync-btn" title="Push current posts to the local devtools backend (localhost:8787) for stats/reasoning visualization. Run `node devtools/server.mjs` first.">🛰 Sync to Devtools</button>
     <button id="notify-settings-btn" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
-    <button id="delete-all-btn" class="btn-danger" title="Permanently delete all scraped posts so they can be re-scraped fresh on the next run">🗑 Delete All</button>
   </header>
 
   <div class="layout">
@@ -37,44 +37,6 @@
     <!-- ── Sidebar ── -->
     <aside class="sidebar">
       <h2>Filters</h2>
-
-      <div class="filter-group">
-        <h3>Sort by</h3>
-        <select id="sort-by">
-          <option value="newest-scraped">Scraped: newest first</option>
-          <option value="oldest-scraped">Scraped: oldest first</option>
-          <option value="newest-posted">Posted: newest first</option>
-          <option value="oldest-posted">Posted: oldest first</option>
-          <option value="price-asc">Price ↑</option>
-          <option value="price-desc">Price ↓</option>
-          <option value="rooms-asc">Rooms ↑</option>
-          <option value="rooms-desc">Rooms ↓</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <h3>Status</h3>
-        <label><input type="checkbox" name="status" value="new" checked> New</label>
-        <label><input type="checkbox" name="status" value="interested" checked> Interested</label>
-        <label><input type="checkbox" name="status" value="seen"> Seen</label>
-        <label><input type="checkbox" name="status" value="hidden"> Hidden</label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Posted within</h3>
-        <div class="field-row">
-          <input type="number" id="posted-days-filter" value="30" min="1" max="365" title="Filter by when the post appeared on Facebook. Leave blank for no filter.">
-          <span>days</span>
-        </div>
-      </div>
-
-      <div class="filter-group">
-        <h3>Scraped within</h3>
-        <div class="field-row">
-          <input type="number" id="scraped-days-filter" value="" min="1" max="365" placeholder="any" title="Filter by when this scraper saved the post. Leave blank for no filter.">
-          <span>days</span>
-        </div>
-      </div>
 
       <div class="filter-group">
         <h3>Search</h3>
@@ -148,6 +110,7 @@
       </div>
 
       <button id="reset-filters-btn">Reset Filters</button>
+      <button id="delete-all-btn" class="btn-danger" title="Permanently delete all scraped posts so they can be re-scraped fresh on the next run">🗑 Delete All</button>
     </aside>
 
     <!-- ── Main card area ── -->
