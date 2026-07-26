@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TLV Rentals — Devtools</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="logo">🛰 TLV Rentals — Devtools</span>
+    <span id="sync-info">No data synced yet</span>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="stats">Stats</button>
+    <button class="tab-btn" data-tab="reasoning">Reasoning</button>
+    <button class="tab-btn" data-tab="weights">Weights</button>
+  </nav>
+
+  <main>
+    <section id="tab-stats" class="tab-panel active"></section>
+
+    <section id="tab-reasoning" class="tab-panel">
+      <div class="reasoning-input">
+        <textarea id="classify-text" rows="8" placeholder="Paste a post's text here…"></textarea>
+        <button id="classify-btn">Classify</button>
+      </div>
+      <div id="reasoning-result"></div>
+    </section>
+
+    <section id="tab-weights" class="tab-panel"></section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

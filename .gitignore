@@ -40,8 +40,10 @@ tlv-regex-misses-*.txt
 scratch/
 tmp/
 
-# ── Local devtools backend (regex/ML visualizer, never shipped) ────────────
-devtools/
+# ── Devtools backend synced data (real scraped post content — names, phone
+# numbers, addresses; never leaves this machine). The devtools/ code itself
+# (server.mjs, public/, README.md) IS tracked.
+devtools/data/
 
 # ── Claude Code internal state ──────────────────────────────────────────────
 .claude/
