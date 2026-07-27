@@ -88,8 +88,14 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/ml_classifier.js** | ML runtime — `mlHybridLabel`, `mlBrokerFill`, dynamic weight loading. |
 | **lib/ml_weights.js** | GENERATED bundled weights (by `ml/train.mjs`). Never edit by hand. |
 | **lib/ml_train_core.js** | Pure training machinery (TF-IDF + logistic regression, CV, pruning). |
-| **lib/ml_retrain.js** | In-extension retraining from corrections — used by dashboard 🧠 and `/retrain`. |
-| **ml/** | Offline side: `gold_labels.json` (2,953 gold labels) + `train.mjs` (Node trainer/eval). |
+| **lib/ml_retrain.js** | In-extension retraining from corrections — used by dashboard 🧠 and `/retrain`. Also trains the shadow heads. |
+| **lib/ml_shadow.js** | Shadow-mode storage + scoring: `ml_shadow` record shape, verdicts, review queue, promotion bars, leak guard. |
+| **lib/ml_price.js** | Price CANDIDATE RANKER — candidate generation, period detection, context features, `predictPrice`, `explainPrice`. |
+| **lib/ml_roommates.js** | Shadow roommates head (keyword-masked binary classifier). |
+| **lib/ml_price_weights.js**, **lib/ml_roommates_weights.js** | GENERATED shadow weights. Never edit by hand. |
+| **devtools/devtools.html/.js** | In-extension devtools page (stats, reasoning, shadow ML, weights). No Node. |
+| **devtools/devtools_core.js** | Pure stats/reasoning computation shared by the extension page AND the optional Node shell. |
+| **ml/** | Offline side: `gold_labels.json` (2,953 gold labels), `train.mjs`, `train_price.mjs`, `train_roommates.mjs`, `shadow_selftest.mjs`. |
 
 ## Common development tasks
 
@@ -179,12 +185,112 @@ A plain-JS logistic-regression layer (TF-IDF over word+bigram features, Hebrew/L
 - **The gate metric is the FIXED gold benchmark** — CV accuracy computed over gold-sourced rows only. Corrections still train the model but do not move the measuring stick (they are by construction the hardest posts; measuring on the whole pool made accuracy appear to drop as corrections accumulated). Two invariants added 2026-07-25 after 83 benchmark rows silently eroded: (1) a corrected gold post STAYS in the benchmark, scored against its `human_label` (before, correcting a gold post removed it from the benchmark — the "fixed" set shrank toward the easy posts); (2) the promotion floor is `max(BASELINE_CV, prev promoted CV) − ε`, so the bar can rise but can never ratchet below the bundled baseline (before, each promotion could sit ε under the previous one indefinitely).
 - **Training-data rules (do not weaken):** never train on `ai_label` (the model's own output must not feed back); `human_label` beats the gold file; rejected weights are discarded, never stored.
 - **Retraining offline**: `node ml/train.mjs <export.json>` regenerates `lib/ml_weights.js` and prints the full eval (model vs regex vs hybrid per gold subset). It shares `lib/ml_train_core.js` + `lib/ml_features.js` with the in-extension path, so the two cannot diverge; if the tokenizer changes, bump `FEATURE_VERSION` and retrain (stored weights with a stale version are ignored).
-- **Deferred**: entry_date/price candidate scorers wait until enough value-level corrections accumulate — training them from regex output would just re-encode the regex.
+- **Superseded (v3.0.0)**: the price candidate scorer now exists — see "Shadow ML" below. entry_date remains unbuilt; its rule gaps (103 posts, highly regular patterns) are cheaper to fix in the regex than to model.
 
 ### Content script origins
 
 - **Content scripts** run at `facebook.com` origin; their `indexedDB` is Facebook's.
 - **Service worker & dashboard** run at `chrome-extension://[id]` origin, sharing one IndexedDB.
+
+
+## Shadow ML (v3.0.0)
+
+Two heads — **price** and **roommates** — that predict but **never tag**. They exist
+to solve a bootstrapping problem: the label/broker heads could be gated before
+shipping because a 2,953-row gold set already existed, but the VALUE tags had no
+benchmark, and one cannot be built from regex output (measuring a model against
+the rules it imitates proves nothing). Shadow mode generates the benchmark: the
+model predicts, predictions are shown but unused, the user judges only
+disagreements, and those verdicts become the measuring stick.
+
+### The safety property is structural, not a flag
+
+Shadow values live in `post.ml_shadow`. `matchesPreferences` reads exactly
+`post.tags_human_override || post.tags` — so a wrong prediction **cannot** reach
+the Telegram filter, not because a guard remembers to skip it but because the
+value is not in the object the filter reads. A flag on `tags` would have been one
+forgotten condition away from silently suppressing a real listing.
+`ml_shadow.js::shadowLeakCheck` asserts the invariant by provenance (a tag equal
+to the shadow value counts as a leak only when the regex did not produce it and
+no human set it). `ml/shadow_selftest.mjs` holds it in place — 46 assertions, and
+test [1] runs the REAL `matchesPreferences` with a control case, so it cannot
+pass for the wrong reason.
+
+### Metrics differ per field, deliberately
+
+- **price → PRECISION.** A null price PASSES the notification filter, so
+  abstaining costs nothing; a wrong value silently hides a listing the user
+  wanted. Only emitted values are scored.
+- **roommates → ACCURACY vs the REGEX on the same judged posts.**
+  `extractRoommates` made zero errors across 28 hand-checked hard cases, so a
+  flat 96% bar would pass a model measurably worse than what ships.
+
+`scoreShadow` also splits precision by disagreement shape — **fill** (regex had
+nothing), **override** (both had a value, differing), **abstain** (model
+declined). Blending them hides the deciding signal: if fill precision is high and
+override precision is poor, the head should fill gaps only, exactly as
+`mlBrokerFill` already does for broker.
+
+### Two thresholds, two bars — do not conflate
+
+- `PRICE_SHADOW_EMIT` (0.6) — when to emit a SHADOW prediction. Wrong shadow
+  predictions cost nothing; they only ask a question. Reusing the strict 0.9 here
+  starved the queue: measured live, 127 outstanding disagreements were ALL
+  abstentions and 0 were reviewable, making `MIN_VERDICTS` unreachable.
+- `PRICE_CONFIDENCE` (0.9) — the bar for ever TAGGING with this head.
+- The gate in `retrainShadowHeads` is a **regression guard** (held-out score vs
+  `max(baseline, previous) − ε`), answering "did this retrain break the model?".
+- The 96%/beat-the-regex bar in `scoreShadow` answers "is it good enough to
+  tag with?" — a separate, later decision the retrain never makes.
+
+### Price is a RANKER, not a head
+
+Document-level TF-IDF cannot emit a value. `lib/ml_price.js` generates every
+number that could be a monthly rent, scores each by local context (±45-char
+window, adjacency, magnitude bucket, currency, rent-label, line position), and
+takes the argmax. Training labels are free: a post whose price the regex found is
+a solved ranking problem. This does NOT merely re-encode the regex — the regex
+fails on *pattern coverage*, a context scorer learns *distribution*.
+
+**Period discrimination is load-bearing.** The first prototype hit ~75% precision
+on regex-null posts and every failure was the same mistake: no notion of what
+period a number referred to (`1,200 NIS per night`, `6,000 לכל התקופה`). Handled
+two ways: an explicit non-monthly marker vetoes a candidate, and short-stay is
+also judged at DOCUMENT level (in "Weekday 1,200/night · Shabbat 1,400", only the
+first carries a marker). Hebrew markers need letter boundaries — `לילות` matches
+inside the place name `גלילות`, `ליום` inside `ליום-יום`. An explicit monthly
+quote overrides ambient short-stay wording.
+
+### Verdict flow
+
+`applyVerdictCorrection` does three things: records the verdict (benchmark),
+writes the confirmed value to `tags_human_override` (which is what feeds
+retraining — the trainers read that field), and flags/clears `regex_miss` keyed on
+whether the REGEX was wrong. The ✏ tag editor records a verdict too, but ONLY for
+open disagreements — `saveTagEdits` writes all six fields as a snapshot, so
+recording agreements would fill the benchmark with trivially both-correct rows.
+
+`reshadow` carries verdicts across re-prediction but **re-derives** `ml_correct` /
+`regex_correct` against the fresh prediction. Carrying them would describe the old
+model while `emitted` describes the new one, and precision would silently stop
+meaning anything after any retrain.
+
+### Known flaw: roommates masking leaks
+
+`maskRoommateKeywords` blanks the regex span, leaving Hebrew suffix debris — the
+head's top tokens are `ים`, `ות`, `פים`, i.e. the keyword bleeding through. That
+inflates masked CV (96.2%) far above real precision (53.8% over 13 verdicts).
+Fixable by masking whole words; not worth it unless the head earns its keep.
+
+## Devtools (v3.0.0)
+
+Runs **in-extension** (`devtools/devtools.html`, dashboard 🔬 button): reads live
+IndexedDB, no sync step, and — unlike a Node process — can read the retrained
+weights in `chrome.storage.local`. Refreshes on tab focus so numbers cannot go
+stale unnoticed. `devtools/server.mjs` remains as an optional shell for inspecting
+an exported JSON offline (`node devtools/server.mjs <export.json>`); both import
+`devtools_core.js`, so they cannot disagree. The `localhost:8787` host permission
+was removed from the manifest.
 
 ## Telegram notifications (v2.0.0)
 

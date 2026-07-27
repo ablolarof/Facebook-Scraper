@@ -36,6 +36,10 @@ This tool is for personal use. Scraping Facebook may be against their Terms of S
 - **ML hybrid classification (v2.3.0)** — a plain-JS logistic-regression model (TF-IDF over Hebrew/English/Russian word+bigram features, trained on a 2,953-post hand-verified gold set) rides on top of the regex: the regex label stands unless the model is ≥90% confident it's wrong, and when the regex can't decide, the model decides alone. Measured by cross-validation, the hybrid beats both regex-alone and model-alone on accuracy *and* rental-recall. Posts the model decided carry a 🤖 badge with its confidence.
 - **ML broker detection (v2.3.0)** — where no explicit תיווך keyword exists, a weakly-supervised model head recognizes agency register (signatures, license numbers, listing style) and fills the broker tag when confident — trained with the broker keywords masked out so it learns the register, not the keyword.
 - **Train it yourself, locally (v2.3.0)** — every correction you make (dashboard label buttons / ✏ tag editor / Telegram 🚩 Miss) is training signal. Hit 🧠 *Retrain ML* on the dashboard or send `/retrain` to your bot: the model retrains in-extension in seconds and the new weights are promoted **only** if they score at least as well as the current ones on a fixed gold benchmark. Fresh installs import the gold training texts once from a local export file — nothing is ever uploaded.
+- **Shadow ML for price (v3.0.0)** — a candidate *ranker* (not a classifier) that reads every number in a post and scores each by its local context, so it can recover rents the regex has no rule for. It runs in **shadow mode**: predictions are shown on the card and measured, but never written to tags, so a wrong guess can never reach your Telegram filter — the value simply isn't in the object the filter reads. You judge only the posts where it disagrees with the regex, and those verdicts become the benchmark that decides whether it ever graduates to tagging. Scored on *precision* (a missing price costs you nothing; a wrong one silently hides a listing).
+- **Explainable predictions (v3.0.0)** — the devtools Reasoning tab shows the full candidate ranking behind any price prediction: every number, its score, the period it was quoted for, the signals that moved it, and which numbers were rejected before scoring ever happened.
+- **In-extension devtools (v3.0.0)** — pipeline stats, a reasoning playground, shadow-ML progress and model weights, all at `devtools/devtools.html` (🔬 button on the dashboard). No server, no sync step, reads live IndexedDB — and unlike the old Node backend it can read your *retrained* weights, so the tokens shown are the ones actually scoring your posts.
+- **Luxury rents no longer discarded (v3.0.0)** — an explicit rent label (`שכ"ד: 50,000`, `Monthly rent 17,500 NIS`) is now trusted past the sanity cap that was silently dropping genuine high-end listings, along with `ILS`, colon-less `Rent 40,000`, and amount-before-label forms (`2,666 שכ״ד`).
 - **Full Marketplace descriptions (v2.4.0)** — pure Marketplace cards only show "₪price · location · title" in the feed; the description exists solely on the listing page, which Facebook renders client-side. The extension now opens each new card-style listing in a background tab, reads the full description from the rendered page, and re-runs dedup/classification/tags/notifications on the complete text.
 - **Structured tag extraction** — for rental posts, the extractor pulls: price (₪/mo), rooms, size (m²), entry date, whether it's a roommate listing, and whether a broker fee applies.
 - **See-more expansion** — Facebook collapses long posts with a "See more" / "ראה עוד" button. The scroller clicks them before extraction so the full text ends up in the database (not a 250-char preview).
@@ -161,6 +165,20 @@ To run this on a schedule (e.g. every hour, so Telegram alerts arrive while you'
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 │   ├── notify.js                       # Telegram notify — settings, matching, send, format
 │   ├── bot.js                          # Telegram bot — polling, commands, /start wizard
+│   ├── ml_shadow.js                    # Shadow-mode records, verdicts, review queue, leak guard
+│   ├── ml_price.js                     # Price candidate ranker + period/short-stay logic
+│   ├── ml_roommates.js                 # Shadow roommates head (keyword-masked)
+│   ├── ml_retrain.js                   # In-extension retraining (all four heads)
+├── devtools/
+│   ├── devtools.html / devtools.js     # In-extension devtools page (no Node)
+│   ├── devtools_core.js                # Pure stats/reasoning shared with the Node shell
+│   └── server.mjs                      # Optional Node shell for inspecting an export file
+├── ml/
+│   ├── gold_labels.json                # 2,953 hand-verified labels (ids only)
+│   ├── train.mjs                       # Offline trainer for the label + broker heads
+│   ├── train_price.mjs                 # Offline trainer for the price ranker
+│   ├── train_roommates.mjs             # Offline trainer for the roommates head
+│   └── shadow_selftest.mjs             # Invariant tests — shadow values can't reach notifications
 ├── automation/
 │   ├── trigger.bat                     # Opens Chrome with the auto-scrape URL
 │   ├── scraper_task.xml                # Importable hourly Task Scheduler task

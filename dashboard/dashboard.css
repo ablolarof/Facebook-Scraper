@@ -866,3 +866,48 @@ body {
   font-weight: 700;
 }
 .btn-notify-cancel:hover { background: #ccd0d5; }
+
+/* ── Shadow-mode ML review ──────────────────────────────────────────────────
+   Visually distinct from real tag pills on purpose: these values are NOT tags.
+   They never reach the notification filter, and the dashed border + 🔬 marker
+   is the signal that nothing here is acting on your behalf yet. */
+.shadow-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px dashed #8b7cc8;
+  border-radius: 6px;
+  background: rgba(139, 124, 200, 0.07);
+}
+.shadow-row-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b5ca8;
+  letter-spacing: 0.02em;
+}
+.shadow-field { font-size: 11px; color: #555; margin-right: 2px; }
+.btn-shadow {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #b9aee0;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  color: #3c3357;
+}
+.btn-shadow:hover { background: #efeaff; border-color: #8b7cc8; }
+.btn-shadow--ml     { border-color: #8b7cc8; font-weight: 600; }
+.btn-shadow--regex  { border-color: #9bb0c8; }
+.btn-shadow--other  { border-style: dashed; color: #6b6b6b; }
+.shadow-judged {
+  font-size: 11px;
+  color: #2e7d32;
+  background: rgba(46, 125, 50, 0.09);
+  border: 1px solid rgba(46, 125, 50, 0.3);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+.shadow-judged--wrong { color: #b23c3c; background: rgba(178,60,60,0.08); border-color: rgba(178,60,60,0.3); }

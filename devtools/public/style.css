@@ -133,3 +133,64 @@ button#classify-btn {
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
+
+/* ── Shadow ML panel ────────────────────────────────────────────────────── */
+.pos   { color: var(--pos); }
+.neg   { color: var(--neg); }
+.muted { color: var(--muted); }
+
+.shadow-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.shadow-card {
+  border: 1px solid rgba(139, 148, 163, 0.25);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.shadow-card h3 {
+  margin: 0 0 4px;
+  font-size: 1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shadow-card h4 {
+  margin: 14px 0 6px;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  font-weight: 500;
+}
+.shadow-card p { margin: 0 0 10px; font-size: 0.85em; }
+/* capitalize the FIELD NAME only — on the whole h3 it also hits the status
+   badge and renders "verdict(s)" as "Verdict(S)". */
+.shadow-field-name { text-transform: capitalize; }
+
+/* Score meter with the promotion bar drawn as a vertical marker, so "how far
+   from the bar" is readable at a glance rather than by comparing two numbers. */
+.meter-table { width: 100%; }
+.meter-table td:first-child { width: 25%; text-transform: capitalize; }
+.meter-table td:last-child  { width: 34%; text-align: right; white-space: nowrap; }
+.meter {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(139, 148, 163, 0.18);
+  overflow: hidden;
+}
+.meter-fill { height: 100%; border-radius: 5px; }
+.meter-fill.pos { background: var(--pos); }
+.meter-fill.neg { background: var(--neg); }
+.meter-bar {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 14px;
+  background: #fff;
+  opacity: 0.85;
+}

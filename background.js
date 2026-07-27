@@ -22,6 +22,9 @@ import { getNotifySettings, sendTelegram, formatPostMessage, matchesPreferences 
   from './lib/notify.js';
 import { pollBot } from './lib/bot.js';
 import { mlHybridLabel, mlBrokerFill, loadStoredMlWeights } from './lib/ml_classifier.js';
+import { predictPrice, loadStoredPriceWeights } from './lib/ml_price.js';
+import { predictRoommates, loadStoredRoommatesWeights } from './lib/ml_roommates.js';
+import { buildShadow, reshadow } from './lib/ml_shadow.js';
 
 // ── ML weights: prefer retrained weights from chrome.storage.local ───────────
 // Loaded at every worker start; hot-reloaded when a retrain (dashboard button
@@ -31,7 +34,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.ml_weights) {
     loadStoredMlWeights().then(src => console.log(`[TLV Rentals] ML weights reloaded (${src})`));
   }
+  if (area === 'local' && changes.ml_price_weights) {
+    loadStoredPriceWeights().then(src => console.log(`[TLV Rentals] price weights reloaded (${src})`));
+  }
+  if (area === 'local' && changes.ml_roommates_weights) {
+    loadStoredRoommatesWeights().then(src => console.log(`[TLV Rentals] roommates weights reloaded (${src})`));
+  }
 });
+
+// ── Shadow-mode heads (price, roommates) ─────────────────────────────────────
+// These predict but do NOT tag: their output goes to post.ml_shadow, never to
+// post.tags, so matchesPreferences (which reads tags_human_override || tags)
+// cannot see them and a wrong prediction can never suppress or trigger an
+// alert. See lib/ml_shadow.js for the full rationale, and
+// ml/shadow_selftest.mjs for the test that holds the invariant in place.
+loadStoredPriceWeights().then(src => console.log(`[TLV Rentals] price weights: ${src}`));
+loadStoredRoommatesWeights().then(src => console.log(`[TLV Rentals] roommates weights: ${src}`));
 
 // ── Telegram bot command polling (stage 7d) ──────────────────────────────────
 // A 30-second alarm wakes the worker to check for bot commands; pollBot()
@@ -143,6 +161,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'GET_TOTAL_COUNT') {
     countPosts().then(count => sendResponse({ count }));
+    return true;
+  }
+
+  // Recompute shadow predictions across every stored rental. Needed after a
+  // retrain, and to populate the review queue on posts scraped before shadow
+  // mode existed. Human verdicts are preserved (reshadow); tags are never
+  // touched, so this cannot alter what the notification filter sees.
+  if (message.type === 'SHADOW_BACKFILL') {
+    backfillShadow().then(sendResponse).catch(err => {
+      console.error('[TLV Rentals] shadow backfill failed:', err);
+      sendResponse({ ok: false, error: String(err) });
+    });
     return true;
   }
 
@@ -472,6 +502,27 @@ async function handleSavePost(post, opts = {}) {
       }
     }
 
+    // ── Shadow-mode predictions (price, roommates) ───────────────────────────
+    // Written to post.ml_shadow ONLY. Never merged into post.tags, so the
+    // notification filter cannot see them — a wrong prediction costs nothing
+    // but a review. Verdicts already recorded by the user survive re-saves
+    // (reshadow), the same way notified_at is carried across an overwrite:
+    // predictions are cheap to recompute, human judgements are not.
+    //
+    // Wrapped so a shadow failure can never fail a save. The post and its real
+    // tags matter; an experimental head does not.
+    try {
+      const effLabel = post.human_label || post.ai_label;
+      if (!post.is_duplicate && effLabel === 'rental' && (post.text || '').trim()) {
+        const rxTags = post.tags_human_override || post.tags || {};
+        post.ml_shadow = reshadow(post, buildShadow(
+          { price: predictPrice(post.text), roommates: predictRoommates(post.text) },
+          rxTags, 'bundled'));
+      }
+    } catch (err) {
+      console.warn('[TLV Rentals] shadow prediction failed (save unaffected):', err);
+    }
+
     await savePost(post);
 
     // Telegram notification check. Never lets an error propagate into the
@@ -530,3 +581,33 @@ async function notifyIfMatch(post, wasNewRecord) {
   await savePost(post);
 }
 
+
+/**
+ * Recompute shadow predictions for every stored rental.
+ *
+ * Only `ml_shadow` is written — tags, labels and notification stamps are left
+ * exactly as they were, so this is safe to run at any time. Existing human
+ * verdicts are carried across by reshadow(): re-running after a retrain
+ * re-scores the model without discarding the benchmark that measures it.
+ */
+async function backfillShadow() {
+  const posts = await getAllPosts();
+  let updated = 0, skipped = 0, failed = 0;
+  for (const post of posts) {
+    const effLabel = post.human_label || post.ai_label;
+    if (post.is_duplicate || effLabel !== 'rental' || !(post.text || '').trim()) { skipped++; continue; }
+    try {
+      const rxTags = post.tags_human_override || post.tags || {};
+      post.ml_shadow = reshadow(post, buildShadow(
+        { price: predictPrice(post.text), roommates: predictRoommates(post.text) },
+        rxTags, 'bundled'));
+      await savePost(post);
+      updated++;
+    } catch (err) {
+      failed++;
+      console.warn(`[TLV Rentals] shadow backfill failed for ${post.post_id}:`, err);
+    }
+  }
+  console.log(`[TLV Rentals] Shadow backfill: ${updated} updated, ${skipped} skipped, ${failed} failed.`);
+  return { ok: true, updated, skipped, failed };
+}

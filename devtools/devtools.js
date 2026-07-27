@@ -1,4 +1,47 @@
-// devtools/public/app.js — vanilla JS frontend for the local devtools backend.
+// devtools/devtools.js — in-extension devtools page (no Node required).
+//
+// Runs at chrome-extension://[id]/devtools/devtools.html, so it shares the
+// extension origin with the dashboard and service worker. That buys three
+// things the Node shell could never have:
+//
+//   1. No sync step. It reads IndexedDB directly, so what you see is live —
+//      there is no "last synced" copy to go stale.
+//   2. It can read chrome.storage.local, so the Weights tab shows the weights
+//      that are ACTUALLY active. The Node server had to print a warning banner
+//      admitting it could not see retrained weights.
+//   3. No personal post content is written to disk as JSON, and no
+//      localhost host permission is needed.
+//
+// Every statistic comes from ./devtools_core.js — the same module the Node
+// shell imports — so the two can never disagree about what a number means.
+// The rendering below is unchanged from the original public/app.js.
+
+import { getAllPosts } from '../lib/db.js';
+import {
+  computeStats, computeShadowStats, buildWeightsResponse, buildShadowWeightsResponse,
+  classify as classifyText,
+} from './devtools_core.js';
+import { activeMlMeta, loadStoredMlWeights } from '../lib/ml_classifier.js';
+import { loadStoredPriceWeights, activePriceMeta } from '../lib/ml_price.js';
+import { loadStoredRoommatesWeights, activeRoommatesMeta } from '../lib/ml_roommates.js';
+
+// Cached post list — every tab reads the same snapshot so the numbers on one
+// tab cannot describe a different moment than the numbers on another.
+let POSTS = [];
+
+async function refresh() {
+  // Load whatever weights are actually promoted BEFORE computing anything, so
+  // the reasoning playground and weight metadata describe the live model.
+  await Promise.all([
+    loadStoredMlWeights(), loadStoredPriceWeights(), loadStoredRoommatesWeights(),
+  ]);
+  POSTS = await getAllPosts();
+  el('sync-info').textContent =
+    `${POSTS.length} posts · live from IndexedDB · ${new Date().toLocaleTimeString()}`;
+  loadStats();
+  loadShadow();
+  loadWeights();
+}
 
 function el(id) { return document.getElementById(id); }
 function pct(n) { return `${(n * 100).toFixed(1)}%`; }
@@ -101,13 +144,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ── Stats ────────────────────────────────────────────────────────────────
 
-async function loadStats() {
-  const res = await fetch('/api/stats');
-  const { synced_at, stats } = await res.json();
-
-  el('sync-info').textContent = synced_at
-    ? `Last synced: ${new Date(synced_at).toLocaleString()} (${stats.total} posts)`
-    : 'No data synced yet — click "🛰 Sync to Devtools" in the dashboard';
+function loadStats() {
+  const stats = computeStats(POSTS);
 
   const tiles = [
     ['Total posts', stats.total],
@@ -161,18 +199,28 @@ function tokenTable(title, entries, cls) {
   `;
 }
 
-async function loadWeights() {
-  const res = await fetch('/api/weights');
-  const data = await res.json();
-  const SHADOW_WEIGHTS = await (await fetch('/api/shadow-weights')).json();
+function loadWeights() {
+  const active = activeMlMeta();
+  const data = buildWeightsResponse(active);
   const meta = data.meta || {};
-  const active = data.extensionActiveMeta;
 
-  const activeNote = active && active.source === 'retrained'
-    ? `<p style="color:var(--neg)">⚠ The extension is currently running <strong>retrained</strong> weights
-       (${active.gold_rows ?? active.label_rows ?? '?'} rows, trained ${active.trained_at || 'unknown date'}) —
-       different from the bundled weights shown below, which Node can't read from chrome.storage.local.</p>`
-    : `<p style="color:var(--muted)">Extension is running bundled weights (or no sync yet) — matches what's shown below.</p>`;
+  // Unlike the Node shell, this page CAN read chrome.storage.local — so it
+  // reports the weights actually in force rather than guessing.
+  const shadowMeta = [
+    ['price', activePriceMeta()],
+    ['roommates', activeRoommatesMeta()],
+  ].map(([n, m]) => `<dt>${n} head</dt><dd>${m.source}${m.trained_at ? ` · trained ${new Date(m.trained_at).toLocaleString()}` : ' · not trained yet'}</dd>`).join('');
+
+  const activeNote = `
+    <p class="${active.source === 'retrained' ? 'pos' : 'muted'}">
+      Label/broker weights in force: <strong>${active.source}</strong>${
+        active.source === 'retrained'
+          ? ` (${active.gold_rows ?? active.label_rows ?? '?'} rows, CV ${active.cv_accuracy != null ? pct(active.cv_accuracy) : '?'}, trained ${active.trained_at ? new Date(active.trained_at).toLocaleString() : '?'})`
+          : ' — the bundled weights shown below'}.
+    </p>
+    <dl class="kv">${shadowMeta}</dl>
+    <p class="muted">Token lists below are always the bundled <code>lib/ml_weights.js</code>;
+    retrained weights live in chrome.storage.local and are used for scoring, not listed here.</p>`;
 
   el('tab-weights').innerHTML = `
     <h2>Model metadata (bundled lib/ml_weights.js)</h2>
@@ -196,7 +244,7 @@ async function loadWeights() {
       ${tokenTable('Toward no-broker-fee', data.broker.negative, 'neg')}
     </div>
 
-    ${shadowWeightsHTML(SHADOW_WEIGHTS)}
+    ${shadowWeightsHTML(buildShadowWeightsResponse())}
   `;
 }
 
@@ -212,12 +260,7 @@ async function classify() {
   if (!text) return;
   el('classify-btn').disabled = true;
   try {
-    const res = await fetch('/api/classify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    const r = await res.json();
+    const r = classifyText(text);
 
     el('reasoning-result').innerHTML = `
       <div class="result-panel">
@@ -343,16 +386,15 @@ function shadowFieldCard(name, f) {
     </div>`;
 }
 
-async function loadShadow() {
-  const res = await fetch('/api/shadow');
-  const { shadow } = await res.json();
+function loadShadow() {
+  const shadow = computeShadowStats(POSTS);
 
   if (!shadow || !shadow.scored) {
     el('tab-shadow').innerHTML = `
       <h2>Shadow ML</h2>
       <p class="muted">No shadow-scored posts in the last sync.
       Run <strong>Re-test Regex + ML</strong> (or 🔬 Shadow Backfill) in the dashboard,
-      then 🛰 Sync to Devtools.</p>`;
+      then hit ↺ Refresh here.</p>`;
     return;
   }
 
@@ -387,6 +429,15 @@ async function loadShadow() {
 
 // ── Init ─────────────────────────────────────────────────────────────────
 
-loadStats();
-loadWeights();
-loadShadow();
+el('reload-btn').addEventListener('click', refresh);
+
+// Re-read whenever the tab is brought back into view. Without this the page
+// silently shows whatever was true when it was opened: judge a batch of posts
+// in the dashboard, switch back here, and the old numbers sit there looking
+// authoritative. A stale statistic that looks live is worse than no statistic,
+// and this view exists precisely to be trusted.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refresh();
+});
+
+refresh();

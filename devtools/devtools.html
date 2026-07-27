@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <title>TLV Rentals — Devtools</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="public/style.css">
 </head>
 <body>
   <header class="topbar">
-    <span class="logo">🛰 TLV Rentals — Devtools</span>
-    <span id="sync-info">No data synced yet</span>
+    <span class="logo">🔬 TLV Rentals — Devtools</span>
+    <span id="sync-info">Loading…</span>
+    <button id="reload-btn" title="Re-read IndexedDB and recompute everything">↺ Refresh</button>
   </header>
 
   <nav class="tabs">
@@ -34,6 +35,6 @@
     <section id="tab-weights" class="tab-panel"></section>
   </main>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="devtools.js"></script>
 </body>
 </html>

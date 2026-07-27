@@ -18,6 +18,10 @@ import {
 
 import { regexExtractTags, mergeWithRegex, regexClassifyPost } from '../lib/regex_extractor.js';
 import {
+  readShadow, needsReviewAny, applyVerdictCorrection, recordVerdict, reviewQueueCount,
+  SHADOW_FIELDS,
+} from '../lib/ml_shadow.js';
+import {
   runRetrain, countCorrections, countNewCorrections, goldCoverage, importGoldTexts,
 } from '../lib/ml_retrain.js';
 
@@ -41,10 +45,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ── Data loading ──────────────────────────────────────────────────────────────
+// Post ids judged since the last explicit reload. The review filter keeps
+// showing them so a card never evaporates mid-session: handleShadowVerdict
+// swaps only its own card and does NOT re-filter, so without this every post
+// judged since the last render vanished in a batch the next time anything
+// called applyFilters() — saving a tag edit, retraining. Observed live as
+// "60 cards on screen, 60 of them already judged", which read as the view
+// wiping itself. Cleared by loadPosts(), i.e. by any deliberate refresh.
+const shadowSessionKeep = new Set();
+
 async function loadPosts() {
+  // A deliberate reload is the point at which judged cards are allowed to go.
+  shadowSessionKeep.clear();
   allPosts = await getAllPosts();
   allPosts.sort((a, b) => (b.scraped_at || '').localeCompare(a.scraped_at || ''));
 }
+
 
 // ── Filter logic ──────────────────────────────────────────────────────────────
 function readFilters() {
@@ -53,6 +69,7 @@ function readFilters() {
   const searchText        = el('text-search').value.trim().toLowerCase();
   const showDupes         = el('show-dupes').checked;
   const onlyMisses        = el('show-only-misses').checked;
+  const shadowQueue       = el('show-shadow-queue').checked;
   const priceMin          = parseFloat(el('price-min').value)  || null;
   const priceMax          = parseFloat(el('price-max').value)  || null;
   const roomsMin          = parseFloat(el('rooms-min').value)  || null;
@@ -64,7 +81,7 @@ function readFilters() {
   const entryDateUnknown   = el('entry-date-unknown').checked;
   const entryDateImmediate = el('entry-date-immediate').checked;
   return { labels, labelSources,
-           searchText, showDupes, onlyMisses,
+           searchText, showDupes, onlyMisses, shadowQueue,
            priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
            entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate };
@@ -90,6 +107,12 @@ function applyFilters() {
   filteredPosts = allPosts.filter(p => {
     if (!f.showDupes && p.is_duplicate) return false;
     if (f.onlyMisses && !p.regex_miss) return false;
+    // Shadow review queue: only posts where a head disagrees with the regex
+    // AND no verdict exists yet. Agreement carries no information, and a
+    // judged disagreement has already done its job.
+    if (f.shadowQueue &&
+        !shadowSessionKeep.has(p.post_id) &&
+        !SHADOW_FIELDS.some(fl => needsReviewAny(p, fl))) return false;
     if (!f.labels.includes(effectiveLabel(p, f.labelSources))) return false;
     if (f.searchText && !(p.text || '').toLowerCase().includes(f.searchText)) return false;
 
@@ -151,7 +174,27 @@ function applyFilters() {
   // Sort control was removed from the sidebar — always newest-scraped first
   // (matches the load-time sort in loadPosts(), so this is a no-op stabilizer
   // for filteredPosts specifically after card actions mutate allPosts in place).
-  filteredPosts.sort((a, b) => (b.scraped_at || '').localeCompare(a.scraped_at || ''));
+  if (f.shadowQueue) {
+    // Order by how much a verdict teaches us. A model FILL (regex had nothing)
+    // is the informative case; an ABSTAIN (regex had a value, model declined)
+    // is the least informative — the regex is nearly always right there — and
+    // it moves no metric. Reviewing top-down therefore spends your attention
+    // where it counts, without hiding anything.
+    const rank = p => {
+      let best = 3;
+      for (const fl of SHADOW_FIELDS) {
+        const s = readShadow(p); const d = s?.fields?.[fl];
+        if (!d || d.agrees || s.verdicts?.[fl]) continue;
+        const mlHas = (d.value ?? null) !== null, rxHas = (d.regex ?? null) !== null;
+        best = Math.min(best, !mlHas ? 2 : (rxHas ? 1 : 0));   // fill < override < abstain
+      }
+      return best;
+    };
+    filteredPosts.sort((a, b) =>
+      rank(a) - rank(b) || (b.scraped_at || '').localeCompare(a.scraped_at || ''));
+  } else {
+    filteredPosts.sort((a, b) => (b.scraped_at || '').localeCompare(a.scraped_at || ''));
+  }
 
   renderCards();
   updateResultCount();
@@ -305,7 +348,7 @@ function cardHTML(post) {
 <div class="card-tags">
   ${pills.join('')}
   <button class="btn-edit-tags" data-action="edit-tags" data-id="${id}" title="Add / correct tags — your fixes train the regex rules">✏</button>
-</div>`;
+</div>${shadowHTML(post, id)}`;
   }
 
   return `
@@ -337,6 +380,104 @@ function cardHTML(post) {
     </div>
   </div>
 </div>`;
+}
+
+// ── Shadow-mode ML review UI ────────────────────────────────────────────────
+//
+// Rendered ONLY where a head disagrees with the regex, or where a verdict has
+// already been recorded. Agreement is invisible: showing a shadow value that
+// merely echoes the tag would be noise, and the point of the row is to ask a
+// question the benchmark needs answered.
+//
+// These values are deliberately styled unlike tag pills. They are not tags —
+// they never reach matchesPreferences — and the UI should not imply otherwise.
+
+const fmtShadowVal = (field, v) => {
+  if (v === null || v === undefined) return '—';
+  if (field === 'price') return '₪' + Number(v).toLocaleString();
+  if (field === 'roommates') return v ? 'Roommates' : 'No roommates';
+  return String(v);
+};
+
+// truth values ride through the DOM as strings; '' means null (e.g. "this post
+// states no rent"), which is a meaningful answer for price, not a missing one.
+const encodeTruth = v => (v === null || v === undefined) ? '' : String(v);
+function decodeTruth(field, raw) {
+  if (raw === '') return null;
+  if (field === 'roommates') return raw === 'true';
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function shadowHTML(post, id) {
+  const s = readShadow(post);
+  if (!s) return '';
+  const rows = [];
+  for (const field of SHADOW_FIELDS) {
+    const f = s.fields?.[field];
+    if (!f) continue;
+    const verdict = s.verdicts?.[field];
+
+    if (verdict) {
+      const cls = verdict.ml_correct ? 'shadow-judged' : 'shadow-judged shadow-judged--wrong';
+      rows.push(`<span class="shadow-field">${esc(field)}</span>
+        <span class="${cls}" title="You judged this. ML ${verdict.ml_correct ? 'was right' : 'was wrong'}; regex ${verdict.regex_correct ? 'was right' : 'was wrong'}.">${esc(fmtShadowVal(field, verdict.truth))} ✓</span>`);
+      continue;
+    }
+    if (f.agrees) continue;   // nothing to ask
+
+    rows.push(`<span class="shadow-field">${esc(field)}</span>
+      <button class="btn-shadow btn-shadow--ml" data-action="shadow-verdict" data-id="${id}" data-field="${esc(field)}" data-truth="${esc(encodeTruth(f.value))}" title="ML says this (confidence ${f.prob ?? '?'}) — click if it is correct">ML: ${esc(fmtShadowVal(field, f.value))}</button>
+      <button class="btn-shadow btn-shadow--regex" data-action="shadow-verdict" data-id="${id}" data-field="${esc(field)}" data-truth="${esc(encodeTruth(f.regex))}" title="The regex says this — click if it is correct">regex: ${esc(fmtShadowVal(field, f.regex))}</button>
+      ${field === 'price'
+        ? `<button class="btn-shadow btn-shadow--other" data-action="shadow-other" data-id="${id}" data-field="price" title="Neither is right — type the correct rent, or leave blank if the post states none">other…</button>`
+        : ''}`);
+  }
+  if (!rows.length) return '';
+  return `<div class="shadow-row"><span class="shadow-row-label">🔬 SHADOW ML (not used as tags)</span>${rows.join('')}</div>`;
+}
+
+// A verdict does three things at once (see ml_shadow.js::applyVerdictCorrection):
+// it scores the shadow benchmark, promotes the confirmed value to a real tag —
+// which is what feeds ML retraining, since the trainers read
+// tags_human_override — and flags the regex as a miss when the regex was the
+// one that got it wrong, so Export Misses can fix the RULE rather than just
+// this post. Confirming the regex was right instead clears any stale miss.
+async function handleShadowVerdict(post, field, truth, cardEl) {
+  const applied = applyVerdictCorrection(post, field, truth);
+  if (!applied) return;
+  await savePost(post);
+  const fresh = cardHTML(post);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = fresh;
+  cardEl.replaceWith(tmp.firstElementChild);
+  shadowSessionKeep.add(post.post_id);   // keep it on screen until an explicit refresh
+  updateResultCount();   // the ⚑ Miss / Export Misses counter may have moved
+}
+
+// Delegates to the service worker, which owns the model heads — the dashboard
+// deliberately does not import them, so there is exactly one code path that
+// can write ml_shadow.
+async function runShadowBackfill() {
+  const btn = el('shadow-backfill-btn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '🔬 Backfilling…';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'SHADOW_BACKFILL' });
+    if (!res?.ok) throw new Error(res?.error || 'backfill failed');
+    await loadPosts();
+    applyFilters();
+    alert(`Shadow backfill complete.\n\n${res.updated} rentals scored, ${res.skipped} skipped` +
+          `${res.failed ? `, ${res.failed} failed` : ''}.\n\n` +
+          `Tick "🔬 ML review queue" in the sidebar to review only the posts ` +
+          `where the model and the regex disagree.`);
+  } catch (err) {
+    alert('Shadow backfill failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 function updateResultCount() {
@@ -416,6 +557,30 @@ async function retrainMl() {
   btn.disabled = true;
   try {
     const result = await runRetrain(msg => { btn.textContent = `🧠 ${msg}`; });
+
+    // Shadow heads share this button. If either was promoted, every stored
+    // prediction is now stale — re-score them so the review queue and the
+    // devtools precision figure reflect the weights that are actually live.
+    // reshadow() keeps your verdicts and recomputes their correctness against
+    // the new predictions, so the benchmark stays honest across a retrain.
+    let shadowMsg = '';
+    if (result.shadow) {
+      const lines = Object.entries(result.shadow).map(([name, r]) => r.promoted
+        ? `  🔬 ${name}: promoted — held-out ${(r.score * 100).toFixed(1)}% ` +
+          `(was ${(r.previous * 100).toFixed(1)}%), ${r.human_labeled} human-labeled`
+        : `  🔬 ${name}: not promoted — ${r.reason}`);
+      shadowMsg = `\n\nShadow heads (still shadow-only — they do not tag):\n${lines.join('\n')}`;
+      if (Object.values(result.shadow).some(r => r.promoted)) {
+        btn.textContent = '🧠 Re-scoring shadow…';
+        try {
+          const bf = await chrome.runtime.sendMessage({ type: 'SHADOW_BACKFILL' });
+          if (bf?.ok) shadowMsg += `\n  Re-scored ${bf.updated} rentals with the new weights.`;
+        } catch { /* non-fatal — the 🔬 Shadow Backfill button can redo it */ }
+        await loadPosts();
+        applyFilters();
+      }
+    }
+
     if (result.promoted) {
       alert(
         `✅ ML model retrained and promoted.\n\n` +
@@ -424,7 +589,7 @@ async function retrainMl() {
         `Trained on ${result.label_rows} labeled posts ` +
         `(${result.corrections} of them your corrections, ${result.new_corrections} new) + ` +
         `${result.broker_rows} broker examples.\n\n` +
-        `New scrapes will classify with the new weights immediately.`);
+        `New scrapes will classify with the new weights immediately.${shadowMsg}`);
     } else if (result.needs_import) {
       alert(`⚠️ Retrain refused:\n\n${result.reason}`);
     } else {
@@ -432,7 +597,7 @@ async function retrainMl() {
         `⚠️ Retrain finished but the new weights were NOT promoted.\n\n` +
         `${result.reason}\n\n` +
         `This usually means the new corrections need company — keep marking ` +
-        `misses and try again later. (Your ⚑ Miss flags are unaffected either way.)`);
+        `misses and try again later. (Your ⚑ Miss flags are unaffected either way.)${shadowMsg}`);
     }
   } catch (err) {
     alert('Retrain failed: ' + (err.message || err));
@@ -449,7 +614,7 @@ function bindControls() {
   document.querySelectorAll(
     'input[name="label"], input[name="label-source"], ' +
     'input[name="roommates-filter"], input[name="broker-filter"], ' +
-    '#show-dupes, #show-only-misses, ' +
+    '#show-dupes, #show-only-misses, #show-shadow-queue, ' +
     '#entry-date-unknown, #entry-date-immediate'
   ).forEach(input => input.addEventListener('change', applyFilters));
 
@@ -472,7 +637,7 @@ function bindControls() {
   });
 
   el('export-btn').addEventListener('click', exportJSON);
-  el('devtools-sync-btn').addEventListener('click', syncToDevtools);
+  el('devtools-btn').addEventListener('click', openDevtools);
   el('export-misses-btn').addEventListener('click', exportMisses);
   el('retest-regex-btn').addEventListener('click', retestRegex);
   el('ml-retrain-btn').addEventListener('click', retrainMl);
@@ -480,6 +645,7 @@ function bindControls() {
   el('delete-all-btn').addEventListener('click', deleteAllPosts);
 
   // Notifications settings modal.
+  el('shadow-backfill-btn').addEventListener('click', runShadowBackfill);
   el('notify-settings-btn').addEventListener('click', openNotifyModal);
   el('notify-close-btn').addEventListener('click', () => el('notify-overlay').classList.add('hidden'));
   el('notify-save-btn').addEventListener('click', saveNotifyForm);
@@ -513,6 +679,35 @@ async function handleCardClick(e) {
 
   const post = allPosts.find(p => p.post_id === postId);
   if (!post) return;
+
+  // ── Shadow ML verdicts ──
+  // Recording a verdict writes ONLY to post.ml_shadow.verdicts — it never
+  // touches post.tags, so judging a shadow prediction cannot change what the
+  // notification filter sees. Use the ✏ tag editor for that, deliberately.
+  if (action === 'shadow-verdict') {
+    const field = btn.dataset.field;
+    await handleShadowVerdict(post, field, decodeTruth(field, btn.dataset.truth), btn.closest('.card'));
+    return;
+  }
+  if (action === 'shadow-other') {
+    const field = btn.dataset.field;
+    const cur = readShadow(post)?.fields?.[field];
+    const raw = prompt(
+      'Correct monthly rent for this post?\n\n' +
+      'Leave blank if the post states no monthly rent (a short-stay rate or ' +
+      'no price at all). Blank is a real answer, not a skip — it records that ' +
+      'the model should have stayed silent.',
+      cur?.value ?? '');
+    if (raw === null) return;                       // cancelled — record nothing
+    const trimmed = raw.trim();
+    let truth = null;
+    if (trimmed !== '') {
+      truth = Number(trimmed.replace(/[^\d.]/g, ''));
+      if (!Number.isFinite(truth) || truth <= 0) { alert('Not a number — nothing recorded.'); return; }
+    }
+    await handleShadowVerdict(post, field, truth, btn.closest('.card'));
+    return;
+  }
 
   if (action === 'edit-tags') {
     openTagEditor(post, btn.closest('.card'));
@@ -830,6 +1025,19 @@ async function saveTagEdits(post, cardEl) {
   post.tags                = corrected;
   post.tags_human_override = corrected;
 
+  // A correction made here answers the same question the 🔬 buttons ask, so
+  // record it as a verdict too — which button you happened to reach for should
+  // not decide whether the benchmark learns from your answer.
+  //
+  // ONLY for fields with an open disagreement. saveTagEdits writes
+  // tags_human_override as a full six-field snapshot, so editing `rooms` also
+  // stamps `price`; recording verdicts for those would fill the benchmark with
+  // posts where the model and the regex already agreed — trivially both-correct
+  // rows that drag precision toward a meaningless 100%.
+  for (const field of SHADOW_FIELDS) {
+    if (needsReviewAny(post, field)) recordVerdict(post, field, corrected[field] ?? null);
+  }
+
   // Auto-set regex_miss if anything changed or any key phrase was given.
   const hasMiss = missedFields.length > 0 || Object.keys(keyPhrases).length > 0;
   if (hasMiss) {
@@ -864,6 +1072,7 @@ function resetFilters() {
   el('rooms-max').value          = '';
   el('show-dupes').checked = false;
   el('show-only-misses').checked = false;
+  el('show-shadow-queue').checked = false;
   applyFilters();
 }
 
@@ -947,26 +1156,13 @@ async function exportJSON() {
 // scraping. `ml_meta` lets the backend flag when the extension is running
 // retrained weights that differ from the bundled lib/ml_weights.js it reads
 // directly (it has no access to chrome.storage.local from Node).
-async function syncToDevtools() {
-  try {
-    const res = await fetch('http://localhost:8787/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        posts: allPosts,
-        ml_meta: activeMlMeta(),
-        synced_at: new Date().toISOString(),
-      }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { count } = await res.json();
-    alert(`Synced ${count ?? allPosts.length} posts to the devtools backend.`);
-  } catch (err) {
-    alert(
-      `Couldn't reach the devtools backend at localhost:8787.\n` +
-      `Is it running? (node devtools/server.mjs)\n\n${err.message}`
-    );
-  }
+// Devtools now runs INSIDE the extension (devtools/devtools.html), reading
+// IndexedDB directly. There is no server to start and no sync step: the page
+// always sees live data, and being on the extension origin it can also read
+// the retrained weights in chrome.storage.local, which the old Node backend
+// could not.
+function openDevtools() {
+  window.open(chrome.runtime.getURL('devtools/devtools.html'), '_blank');
 }
 
 // ── Auto regex process (runs silently on every load / refresh) ───────────────
@@ -1243,7 +1439,13 @@ async function retestRegex() {
                 diff.reclassified.length + diff.newlyTagged.length;
 
   if (total === 0) {
-    alert('Re-test complete: the current regex produces the same results as before — no changes.');
+    // No regex changes does NOT mean nothing to do: the shadow heads may have
+    // been retrained, or these posts may predate shadow mode entirely. Offer
+    // the ML pass on its own rather than returning and leaving no way to run it.
+    if (confirm('The current regex produces the same results as before — no regex changes.\n\n' +
+                'Re-score the shadow ML heads (price + roommates) on all stored rentals anyway?')) {
+      await commitRetest(diff);
+    }
     return;
   }
 
@@ -1270,6 +1472,7 @@ function showRetestModal(diff) {
     ${items.map(i => `<li>${esc(i)}</li>`).join('')}
   </ul>
   <p class="retest-note">Human labels and manually corrected tags are never overwritten.</p>
+  <p class="retest-note">Applying also re-scores the 🔬 shadow ML heads (price + roommates) on every stored rental. Those write to <code>ml_shadow</code> only — never to tags — so they cannot affect notifications. Verdicts you have already recorded are kept.</p>
   <div class="retest-actions">
     <button class="btn-retest-apply">Apply changes</button>
     <button class="btn-retest-cancel">Cancel</button>
@@ -1324,9 +1527,31 @@ async function commitRetest(diff) {
     count++;
   }
 
+  // ── Then re-score the shadow ML heads across the whole store ──
+  // Runs AFTER the regex pass on purpose: shadow records store the regex value
+  // they were compared against (`fields[x].regex`), so scoring first would
+  // freeze the OLD regex output into every record and report disagreements
+  // that no longer exist.
+  //
+  // Delegated to the service worker, which owns the model heads — one write
+  // path for ml_shadow. Existing verdicts survive (reshadow), and tags are
+  // never touched, so this cannot alter what the notification filter sees.
+  let shadowMsg = '';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'SHADOW_BACKFILL' });
+    if (res?.ok) shadowMsg = `\n🔬 Shadow ML re-scored ${res.updated} rental${res.updated !== 1 ? 's' : ''}` +
+      `${res.failed ? ` (${res.failed} failed)` : ''}.`;
+    else shadowMsg = `\n🔬 Shadow ML re-score failed: ${res?.error || 'unknown error'}`;
+  } catch (err) {
+    shadowMsg = `\n🔬 Shadow ML re-score failed: ${err.message}`;
+  }
+
   await loadPosts();
   applyFilters();
-  alert(`Re-test applied: ${count} post${count !== 1 ? 's' : ''} updated.`);
+  const queued = SHADOW_FIELDS.reduce((n, f) => n + reviewQueueCount(allPosts, f), 0);
+  alert(`Re-test applied: ${count} post${count !== 1 ? 's' : ''} updated.${shadowMsg}\n\n` +
+        `${queued} shadow question${queued !== 1 ? 's' : ''} awaiting review — ` +
+        `tick "🔬 ML review queue" in the sidebar to see only those posts.`);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────

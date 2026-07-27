@@ -14,7 +14,7 @@
     <button id="refresh-btn">↺ Refresh</button>
     <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
     <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
-    <button id="retest-regex-btn" title="Re-run the current regex on all posts and preview what would change before committing">Re-test Regex</button>
+    <button id="retest-regex-btn" title="Re-run the current regex on all posts, preview what would change, and on apply also re-score the shadow ML heads (price + roommates) across every stored rental. Shadow values go to ml_shadow only — never to tags — so notifications are unaffected.">Re-test Regex + ML</button>
     <button id="ml-retrain-btn" title="Retrain the ML classifier on your corrections (dashboard labels/✏ + Telegram 🚩 Miss). The count shown is corrections since the last retrain — independent of the ⚑ Miss / Export Misses counter, which tracks regex-fix exports separately. Runs locally in seconds; new weights are kept only if they score at least as well as the current ones.">🧠 Retrain ML</button>
     <span class="export-group">
       <select id="export-scope" title="Which posts to include in the JSON export">
@@ -28,8 +28,9 @@
       </select>
       <button id="export-btn">Export JSON</button>
     </span>
-    <button id="devtools-sync-btn" title="Push current posts to the local devtools backend (localhost:8787) for stats/reasoning visualization. Run `node devtools/server.mjs` first.">🛰 Sync to Devtools</button>
+    <button id="devtools-btn" title="Open the devtools page — pipeline stats, the reasoning playground, shadow-ML progress and model weights. Runs inside the extension against live data; no server needed.">🔬 Devtools</button>
     <button id="notify-settings-btn" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
+    <button id="shadow-backfill-btn" title="Recompute shadow ML predictions (price + roommates) for every stored rental. Only ml_shadow is written — tags and notifications are never touched. Your existing verdicts are preserved, so it is safe to re-run after a retrain.">🔬 Shadow Backfill</button>
   </header>
 
   <div class="layout">
@@ -63,6 +64,9 @@
         </label>
         <label class="toggle-label">
           <input type="checkbox" id="show-only-misses"> Regex misses only
+        </label>
+        <label class="toggle-label" title="Posts where a shadow ML head disagrees with the regex and you have not judged it yet. These are the only posts worth reviewing — agreement teaches the benchmark nothing.">
+          <input type="checkbox" id="show-shadow-queue"> 🔬 ML review queue
         </label>
       </div>
 
