@@ -81,7 +81,12 @@ Only `devtools/data/` (synced post content) is gitignored; the code is tracked.
   This deliberately lives here and not on the dashboard: a half-trained model's
   score is a lab number, not something to read while browsing apartments.
 
-- **Weights** — the bundled model's metadata (feature version, gold rows, CV
+- **Weights** — opens with **which weights are actually in use**, per head:
+  promoted weights in `chrome.storage.local` always beat the bundled
+  `lib/*_weights.js`, so after a retrain the running model can be ahead of what
+  is committed. The table says "repo IS the model" / "repo copy matches" /
+  "AHEAD of the repo — export to commit". Only this page can determine that; the
+  Node shell cannot read `chrome.storage.local`. Below it: the bundled model's metadata (feature version, gold rows, CV
   accuracy, trained date) and its top rental-indicative / not-rental-indicative
   tokens for both the label and broker heads. If the synced extension is
   running retrained weights (`chrome.storage.local`, not visible to this

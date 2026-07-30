@@ -30,6 +30,7 @@
     </span>
     <button id="devtools-btn" title="Open the devtools page — pipeline stats, the reasoning playground, shadow-ML progress and model weights. Runs inside the extension against live data; no server needed.">🔬 Devtools</button>
     <button id="notify-settings-btn" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
+    <button id="export-weights-btn" title="Write the currently PROMOTED ML weights (label, broker, price, roommates) back out as lib/*_weights.js files so a retrain can be committed to git. Retrained weights otherwise live only in this browser profile.">💾 Export Weights</button>
     <button id="shadow-backfill-btn" title="Recompute shadow ML predictions (price + roommates) for every stored rental. Only ml_shadow is written — tags and notifications are never touched. Your existing verdicts are preserved, so it is safe to re-run after a retrain.">🔬 Shadow Backfill</button>
   </header>
 

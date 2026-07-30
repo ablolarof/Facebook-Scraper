@@ -93,6 +93,7 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **lib/ml_price.js** | Price CANDIDATE RANKER — candidate generation, period detection, context features, `predictPrice`, `explainPrice`. |
 | **lib/ml_roommates.js** | Shadow roommates head (keyword-masked binary classifier). |
 | **lib/ml_price_weights.js**, **lib/ml_roommates_weights.js** | GENERATED shadow weights. Never edit by hand. |
+| **lib/ml_weights_export.js** | Turns promoted (chrome.storage.local) weights back into the bundled `lib/*_weights.js` modules — dashboard 💾 Export Weights. |
 | **devtools/devtools.html/.js** | In-extension devtools page (stats, reasoning, shadow ML, weights). No Node. |
 | **devtools/devtools_core.js** | Pure stats/reasoning computation shared by the extension page AND the optional Node shell. |
 | **ml/** | Offline side: `gold_labels.json` (2,953 gold labels), `train.mjs`, `train_price.mjs`, `train_roommates.mjs`, `shadow_selftest.mjs`. |
@@ -186,6 +187,44 @@ A plain-JS logistic-regression layer (TF-IDF over word+bigram features, Hebrew/L
 - **Training-data rules (do not weaken):** never train on `ai_label` (the model's own output must not feed back); `human_label` beats the gold file; rejected weights are discarded, never stored.
 - **Retraining offline**: `node ml/train.mjs <export.json>` regenerates `lib/ml_weights.js` and prints the full eval (model vs regex vs hybrid per gold subset). It shares `lib/ml_train_core.js` + `lib/ml_features.js` with the in-extension path, so the two cannot diverge; if the tokenizer changes, bump `FEATURE_VERSION` and retrain (stored weights with a stale version are ignored).
 - **Superseded (v3.0.0)**: the price candidate scorer now exists — see "Shadow ML" below. entry_date remains unbuilt; its rule gaps (103 posts, highly regular patterns) are cheaper to fix in the regex than to model.
+
+### Weight provenance — which weights are actually in use
+
+Precedence is the same for every head and is decided at each worker start:
+
+```
+chrome.storage.local   →  wins if present AND feature_version matches
+                          (label head additionally requires >= MIN_GOLD_ROWS)
+lib/*_weights.js       →  fallback, and what ships to a fresh clone
+```
+
+They never compete: promoted weights always win, the bundled file is the
+fallback. So the bundled copy is a *distribution artifact*, not the source of
+truth for any given install.
+
+The trap this creates: retraining promotes into `chrome.storage.local`, which is
+per-install runtime state invisible to git — so the running model can be well
+ahead of what is committed, and reading `lib/ml_weights.js` tells you nothing
+about what is scoring your posts. Two things address it:
+
+- **Dashboard 💾 Export Weights** (`lib/ml_weights_export.js`) writes the promoted
+  weights back out as the bundled modules, in byte-identical format to what the
+  offline trainers emit, so a diff between the two paths is meaningful. It writes
+  straight into `lib/` via the File System Access API where available, else falls
+  back to downloads. Heads with nothing promoted are SKIPPED, never emitted empty
+  — overwriting a good bundled head with a stub would silently downgrade the
+  shipped model. `trained_correction_ids` is stripped: it is per-install
+  bookkeeping for `countNewCorrections()`, and shipping it would make a fresh
+  install believe those corrections were already folded in.
+- **Devtools → Weights** opens with a per-head table reading either "running the
+  bundled file — repo IS the model", "retrained, and the repo copy matches it",
+  or "retrained and AHEAD of the repo". It compares `trained_at` between the
+  bundled import and the live active meta; only the in-extension page can do this,
+  since the Node shell cannot read `chrome.storage.local`.
+
+Note a `FEATURE_VERSION` bump silently invalidates stored weights and falls back
+to bundled — by design, since the tokenizer changed underneath them. The table
+flipping to "running the bundled file" is the signal to retrain.
 
 ### Content script origins
 

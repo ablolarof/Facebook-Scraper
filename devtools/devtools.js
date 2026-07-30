@@ -22,6 +22,9 @@ import {
   classify as classifyText,
 } from './devtools_core.js';
 import { activeMlMeta, loadStoredMlWeights } from '../lib/ml_classifier.js';
+import { ML_META as BUNDLED_LABEL_META } from '../lib/ml_weights.js';
+import { ML_PRICE_META as BUNDLED_PRICE_META } from '../lib/ml_price_weights.js';
+import { ML_ROOMMATES_META as BUNDLED_ROOMMATES_META } from '../lib/ml_roommates_weights.js';
 import { loadStoredPriceWeights, activePriceMeta } from '../lib/ml_price.js';
 import { loadStoredRoommatesWeights, activeRoommatesMeta } from '../lib/ml_roommates.js';
 
@@ -211,7 +214,38 @@ function loadWeights() {
     ['roommates', activeRoommatesMeta()],
   ].map(([n, m]) => `<dt>${n} head</dt><dd>${m.source}${m.trained_at ? ` · trained ${new Date(m.trained_at).toLocaleString()}` : ' · not trained yet'}</dd>`).join('');
 
+  // Which weights are in force, and does the repo still match them?
+  //
+  // Precedence is always: weights promoted into chrome.storage.local beat the
+  // bundled lib/*_weights.js, gated on feature_version (and >=2,000 gold rows
+  // for the label head). The repo copy is the FALLBACK and the thing that
+  // ships — so after a retrain the running model can silently be ahead of what
+  // is committed. This table says which, per head, so "which one is correct?"
+  // never has to be reasoned about from memory.
+  const syncRows = [
+    ['label / broker', BUNDLED_LABEL_META, active],
+    ['price',          BUNDLED_PRICE_META, activePriceMeta()],
+    ['roommates',      BUNDLED_ROOMMATES_META, activeRoommatesMeta()],
+  ].map(([name, bundled, live]) => {
+    let state, cls;
+    if (live.source !== 'retrained') {
+      state = 'running the bundled file — repo IS the model'; cls = 'muted';
+    } else if (bundled.trained_at && live.trained_at === bundled.trained_at) {
+      state = 'retrained, and the repo copy matches it'; cls = 'pos';
+    } else {
+      state = 'retrained and AHEAD of the repo — 💾 Export Weights to commit'; cls = 'neg';
+    }
+    return `<tr><td>${name}</td><td class="${cls}">${state}</td>
+      <td class="muted">in force: ${live.trained_at ? new Date(live.trained_at).toLocaleString() : '—'}<br>
+      bundled: ${bundled.trained_at ? new Date(bundled.trained_at).toLocaleString() : '—'}</td></tr>`;
+  }).join('');
+
   const activeNote = `
+    <h2>Which weights are actually in use</h2>
+    <p class="muted">Promoted weights in chrome.storage.local always win over the bundled
+    files; the bundled copy is the fallback and the thing that ships to a fresh clone.</p>
+    <table><tr><th>head</th><th>state</th><th>trained</th></tr>${syncRows}</table>
+
     <p class="${active.source === 'retrained' ? 'pos' : 'muted'}">
       Label/broker weights in force: <strong>${active.source}</strong>${
         active.source === 'retrained'

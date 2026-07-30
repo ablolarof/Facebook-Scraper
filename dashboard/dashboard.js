@@ -21,6 +21,8 @@ import {
   readShadow, needsReviewAny, applyVerdictCorrection, recordVerdict, reviewQueueCount,
   SHADOW_FIELDS,
 } from '../lib/ml_shadow.js';
+import { buildWeightFiles, describeStoredWeights, WEIGHT_EXPORTS }
+  from '../lib/ml_weights_export.js';
 import {
   runRetrain, countCorrections, countNewCorrections, goldCoverage, importGoldTexts,
 } from '../lib/ml_retrain.js';
@@ -455,6 +457,83 @@ async function handleShadowVerdict(post, field, truth, cardEl) {
   updateResultCount();   // the ⚑ Miss / Export Misses counter may have moved
 }
 
+/**
+ * Write the promoted weights back out as lib/*_weights.js so a retrain can be
+ * committed. Retraining promotes into chrome.storage.local, which is per-install
+ * runtime state — invisible to git, and lost if the profile is cleared.
+ *
+ * Prefers the File System Access API: pick the repo's lib/ folder once and the
+ * files are written in place, ready to commit. Falls back to ordinary downloads
+ * where that API is unavailable or the write fails, in which case the files land
+ * in Downloads and need copying into lib/.
+ */
+async function exportWeights() {
+  const btn = el('export-weights-btn');
+  const stored = await chrome.storage.local.get(WEIGHT_EXPORTS.map(w => w.key));
+  const { files, skipped } = buildWeightFiles(stored);
+
+  if (!files.length) {
+    alert([
+      'No retrained weights are promoted yet — every head is running the bundled',
+      'weights already in the repo, so there is nothing new to export.',
+      '',
+      'Run 🧠 Retrain ML first.',
+    ].join('\n'));
+    return;
+  }
+
+  const lines = [
+    `Export ${files.length} weight file${files.length !== 1 ? 's' : ''}?`,
+    '',
+    ...describeStoredWeights(stored),
+  ];
+  if (skipped.length) {
+    lines.push('', `Skipped (nothing promoted): ${skipped.join(', ')} —`,
+               'their bundled files are left untouched.');
+  }
+  lines.push('', 'These encode your corrections. Committing them makes your',
+             'judgement the default for anyone who clones the repo.');
+  if (!confirm(lines.join('\n'))) return;
+
+  btn.disabled = true;
+  const names = files.map(f => '  ' + f.name).join('\n');
+  try {
+    // Preferred: write straight into lib/.
+    if (window.showDirectoryPicker) {
+      try {
+        const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'tlv-lib' });
+        for (const f of files) {
+          const fh = await dir.getFileHandle(f.name, { create: true });
+          const w = await fh.createWritable();
+          await w.write(f.content);
+          await w.close();
+        }
+        alert([`Wrote ${files.length} file(s) into the folder you chose:`, '', names, '',
+               "If that was the repo's lib/ folder, they are ready to commit."].join('\n'));
+        return;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;   // cancelled — not a failure
+        console.warn('[TLV Rentals] Directory write failed, falling back to download:', err);
+      }
+    }
+    // Fallback: plain downloads.
+    for (const f of files) {
+      const url = URL.createObjectURL(new Blob([f.content], { type: 'text/javascript' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      await new Promise(r => setTimeout(r, 300));   // Chrome throttles rapid downloads
+    }
+    alert([`Downloaded ${files.length} file(s):`, '', names, '',
+           "Copy them into the repo's lib/ folder, then commit."].join('\n'));
+  } catch (err) {
+    alert('Weight export failed: ' + (err.message || err));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Delegates to the service worker, which owns the model heads — the dashboard
 // deliberately does not import them, so there is exactly one code path that
 // can write ml_shadow.
@@ -645,6 +724,7 @@ function bindControls() {
   el('delete-all-btn').addEventListener('click', deleteAllPosts);
 
   // Notifications settings modal.
+  el('export-weights-btn').addEventListener('click', exportWeights);
   el('shadow-backfill-btn').addEventListener('click', runShadowBackfill);
   el('notify-settings-btn').addEventListener('click', openNotifyModal);
   el('notify-close-btn').addEventListener('click', () => el('notify-overlay').classList.add('hidden'));
