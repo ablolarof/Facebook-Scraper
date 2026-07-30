@@ -10,12 +10,34 @@
   <!-- Top bar -->
   <header class="topbar">
     <span class="logo">🏠 TLV Rentals</span>
+
+    <div class="search-wrap">
+      <input type="search" id="text-search" placeholder="Search post text…">
+    </div>
+
     <span id="result-count">Loading…</span>
-    <button id="refresh-btn">↺ Refresh</button>
-    <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
-    <button id="export-misses-btn" title="Export flagged regex misses as a ready-to-paste training prompt for Claude">Export Misses</button>
-    <button id="retest-regex-btn" title="Re-run the current regex on all posts, preview what would change, and on apply also re-score the shadow ML heads (price + roommates) across every stored rental. Shadow values go to ml_shadow only — never to tags — so notifications are unaffected.">Re-test Regex + ML</button>
-    <button id="ml-retrain-btn" title="Retrain the ML classifier on your corrections (dashboard labels/✏ + Telegram 🚩 Miss). The count shown is corrections since the last retrain — independent of the ⚑ Miss / Export Misses counter, which tracks regex-fix exports separately. Runs locally in seconds; new weights are kept only if they score at least as well as the current ones.">🧠 Retrain ML</button>
+    <span class="topbar-spacer"></span>
+
+    <button id="refresh-btn" class="btn-chrome" title="Reload posts from storage">↺ Refresh</button>
+
+    <div class="pipeline-wrap">
+      <button id="pipeline-menu-btn" class="btn-chrome" title="Run pipeline maintenance jobs: extraction, retraining, exports.">
+        Pipeline <span class="caret">▾</span>
+      </button>
+      <div id="pipeline-menu" class="pipeline-menu">
+        <button id="regex-extract-btn" title="Run regex-based classification + tag extraction on every post that has not been manually corrected. Instant — no API calls. Skips posts already processed by the regex.">Regex Extract</button>
+        <button id="retest-regex-btn" title="Re-run the current regex on all posts, preview what would change, and on apply also re-score the shadow ML heads (price + roommates) across every stored rental. Shadow values go to ml_shadow only — never to tags — so notifications are unaffected.">Re-test Regex + ML</button>
+        <button id="ml-retrain-btn" title="Retrain the ML classifier on your corrections (dashboard labels/✏ + Telegram 🚩 Miss). The count shown is corrections since the last retrain — independent of the ⚑ Miss / Export Misses counter, which tracks regex-fix exports separately. Runs locally in seconds; new weights are kept only if they score at least as well as the current ones.">🧠 Retrain ML</button>
+        <button id="shadow-backfill-btn" title="Recompute shadow ML predictions (price + roommates) for every stored rental. Only ml_shadow is written — tags and notifications are never touched. Your existing verdicts are preserved, so it is safe to re-run after a retrain.">🔬 Shadow Backfill</button>
+        <div class="pipeline-menu-divider"></div>
+        <button id="export-misses-btn" title="Download posts flagged as regex misses for review.">Export Misses</button>
+        <button id="export-weights-btn" title="Write the currently PROMOTED ML weights (label, broker, price, roommates) back out as lib/*_weights.js files so a retrain can be committed to git. Retrained weights otherwise live only in this browser profile.">💾 Export Weights</button>
+      </div>
+    </div>
+
+    <button id="devtools-btn" class="btn-chrome" title="Open the devtools page — pipeline stats, the reasoning playground, shadow-ML progress and model weights. Runs inside the extension against live data; no server needed.">🔬 Devtools</button>
+    <button id="notify-settings-btn" class="btn-chrome" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
+
     <span class="export-group">
       <select id="export-scope" title="Which posts to include in the JSON export">
         <option value="all">All posts</option>
@@ -26,96 +48,102 @@
         <option value="duplicates">Duplicates</option>
         <option value="misses">Misses</option>
       </select>
-      <button id="export-btn">Export JSON</button>
+      <button id="export-btn">Export</button>
     </span>
-    <button id="devtools-btn" title="Open the devtools page — pipeline stats, the reasoning playground, shadow-ML progress and model weights. Runs inside the extension against live data; no server needed.">🔬 Devtools</button>
-    <button id="notify-settings-btn" title="Telegram notification settings — get an alert on your phone when a new post matches your preferences">🔔 Notifications</button>
-    <button id="export-weights-btn" title="Write the currently PROMOTED ML weights (label, broker, price, roommates) back out as lib/*_weights.js files so a retrain can be committed to git. Retrained weights otherwise live only in this browser profile.">💾 Export Weights</button>
-    <button id="shadow-backfill-btn" title="Recompute shadow ML predictions (price + roommates) for every stored rental. Only ml_shadow is written — tags and notifications are never touched. Your existing verdicts are preserved, so it is safe to re-run after a retrain.">🔬 Shadow Backfill</button>
+
+    <button id="delete-all-btn" class="btn-danger-chrome" title="Permanently delete all scraped posts so they can be re-scraped fresh on the next run">🗑 Delete All</button>
   </header>
 
   <div class="layout">
 
     <!-- ── Sidebar ── -->
     <aside class="sidebar">
-      <h2>Filters</h2>
 
-      <div class="filter-group">
-        <h3>Search</h3>
-        <input type="search" id="text-search" placeholder="Search post text…">
-      </div>
+      <details class="filter-group" open>
+        <summary><span class="caret">▾</span>Status</summary>
+        <div class="filter-body">
+          <label><input type="checkbox" name="label" value="rental"     checked> Rental</label>
+          <label><input type="checkbox" name="label" value="not_rental"        > Not rental</label>
+          <label><input type="checkbox" name="label" value="unlabeled"  checked> Unlabeled</label>
+        </div>
+      </details>
 
-      <div class="filter-group">
-        <h3>Label</h3>
-        <label><input type="checkbox" name="label" value="rental"     checked> Rental</label>
-        <label><input type="checkbox" name="label" value="not_rental"        > Not rental</label>
-        <label><input type="checkbox" name="label" value="unlabeled"  checked> Unlabeled</label>
-      </div>
+      <details class="filter-group" open>
+        <summary><span class="caret">▾</span>Label source</summary>
+        <div class="filter-body">
+          <label><input type="checkbox" name="label-source" value="human" checked> Human-labeled</label>
+          <label><input type="checkbox" name="label-source" value="ai"    checked> AI-labeled</label>
+        </div>
+      </details>
 
-      <div class="filter-group">
-        <h3>Label source</h3>
-        <label><input type="checkbox" name="label-source" value="human" checked> Human-labeled</label>
-        <label><input type="checkbox" name="label-source" value="ai"    checked> AI-labeled</label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Show</h3>
-        <label class="toggle-label">
-          <input type="checkbox" id="show-dupes"> Duplicates
-        </label>
-        <label class="toggle-label">
-          <input type="checkbox" id="show-only-misses"> Regex misses only
-        </label>
-        <label class="toggle-label" title="Posts where a shadow ML head disagrees with the regex and you have not judged it yet. These are the only posts worth reviewing — agreement teaches the benchmark nothing.">
-          <input type="checkbox" id="show-shadow-queue"> 🔬 ML review queue
-        </label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Price (₪/mo)</h3>
-        <div class="field-row">
+      <details class="filter-group" open>
+        <summary><span class="caret">▾</span>Price (₪/mo)</summary>
+        <div class="filter-body field-row">
           <input type="number" id="price-min" placeholder="Min" min="0" step="100">
           <span>–</span>
           <input type="number" id="price-max" placeholder="Max" min="0" step="100">
         </div>
-      </div>
+      </details>
 
-      <div class="filter-group">
-        <h3>Rooms</h3>
-        <div class="field-row">
+      <details class="filter-group">
+        <summary><span class="caret">▾</span>Rooms</summary>
+        <div class="filter-body field-row">
           <input type="number" id="rooms-min" placeholder="Min" min="0" step="0.5">
           <span>–</span>
           <input type="number" id="rooms-max" placeholder="Max" min="0" step="0.5">
         </div>
-      </div>
+      </details>
 
-      <div class="filter-group">
-        <h3>Roommates</h3>
-        <label><input type="checkbox" name="roommates-filter" value="yes"> Seeking roommate</label>
-        <label><input type="checkbox" name="roommates-filter" value="no"> Whole apartment</label>
-        <label><input type="checkbox" name="roommates-filter" value="unknown"> Unknown</label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Broker fee</h3>
-        <label><input type="checkbox" name="broker-filter" value="yes"> Has broker fee</label>
-        <label><input type="checkbox" name="broker-filter" value="no"> No broker fee</label>
-        <label><input type="checkbox" name="broker-filter" value="unknown"> Unknown</label>
-      </div>
-
-      <div class="filter-group">
-        <h3>Entry date</h3>
-        <div class="date-range-row">
-          <input type="date" id="entry-date-from" title="From date">
-          <span>–</span>
-          <input type="date" id="entry-date-to" title="To date">
+      <details class="filter-group">
+        <summary><span class="caret">▾</span>Roommates</summary>
+        <div class="tristate" role="group" aria-label="Roommates filter">
+          <div class="tristate-inner">
+            <button type="button" class="tristate-btn active" data-group="roommates" data-value="">Any</button>
+            <button type="button" class="tristate-btn"        data-group="roommates" data-value="yes">Yes</button>
+            <button type="button" class="tristate-btn"        data-group="roommates" data-value="no">No</button>
+            <button type="button" class="tristate-btn"        data-group="roommates" data-value="unknown">Unk.</button>
+          </div>
         </div>
-        <label><input type="checkbox" id="entry-date-unknown" checked> Include unknown</label>
-        <label><input type="checkbox" id="entry-date-immediate" checked> Include immediate</label>
-      </div>
+      </details>
 
-      <button id="reset-filters-btn">Reset Filters</button>
-      <button id="delete-all-btn" class="btn-danger" title="Permanently delete all scraped posts so they can be re-scraped fresh on the next run">🗑 Delete All</button>
+      <details class="filter-group">
+        <summary><span class="caret">▾</span>Broker fee</summary>
+        <div class="tristate" role="group" aria-label="Broker fee filter">
+          <div class="tristate-inner">
+            <button type="button" class="tristate-btn active" data-group="broker" data-value="">Any</button>
+            <button type="button" class="tristate-btn"        data-group="broker" data-value="yes">Yes</button>
+            <button type="button" class="tristate-btn"        data-group="broker" data-value="no">No</button>
+            <button type="button" class="tristate-btn"        data-group="broker" data-value="unknown">Unk.</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="filter-group">
+        <summary><span class="caret">▾</span>Entry date</summary>
+        <div class="filter-body">
+          <div class="date-range-row">
+            <input type="date" id="entry-date-from" title="From date">
+            <span>–</span>
+            <input type="date" id="entry-date-to" title="To date">
+          </div>
+          <label><input type="checkbox" id="entry-date-unknown" checked> Include unknown</label>
+          <label><input type="checkbox" id="entry-date-immediate" checked> Include immediate</label>
+        </div>
+      </details>
+
+      <details class="filter-group">
+        <summary><span class="caret">▾</span>More filters</summary>
+        <div class="filter-body">
+          <label><input type="checkbox" id="show-interested-only"> Interested</label>
+          <label><input type="checkbox" id="show-dupes"> Duplicates</label>
+          <label><input type="checkbox" id="show-only-misses"> Regex misses only</label>
+          <label title="Posts where a shadow ML head disagrees with the regex and you have not judged it yet. These are the only posts worth reviewing — agreement teaches the benchmark nothing.">
+            <input type="checkbox" id="show-shadow-queue"> 🔬 ML review queue
+          </label>
+        </div>
+      </details>
+
+      <button id="reset-filters-btn" class="btn-reset">Reset filters</button>
     </aside>
 
     <!-- ── Main card area ── -->

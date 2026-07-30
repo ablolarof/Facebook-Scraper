@@ -56,6 +56,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 // wiping itself. Cleared by loadPosts(), i.e. by any deliberate refresh.
 const shadowSessionKeep = new Set();
 
+// ── Header "Pipeline ▾" dropdown + per-card "⋯" overflow menu ────────────────
+// Both are pure DOM toggles (no re-render), closed via a document-level
+// click-away listener wired in bindControls().
+let pipelineMenuOpen = false;
+function closePipelineMenu() {
+  pipelineMenuOpen = false;
+  el('pipeline-menu')?.classList.remove('open');
+}
+function closeCardMenu() {
+  document.querySelectorAll('.card-menu-wrap.open').forEach(w => w.classList.remove('open'));
+}
+
+// Reads the active button in a sidebar tri-state segmented control
+// (Any / Yes / No / Unknown). '' (Any) means "no filter".
+function activeTristate(group) {
+  const btn = document.querySelector(`.tristate-btn.active[data-group="${group}"]`);
+  return btn ? btn.dataset.value : '';
+}
+
 async function loadPosts() {
   // A deliberate reload is the point at which judged cards are allowed to go.
   shadowSessionKeep.clear();
@@ -72,18 +91,20 @@ function readFilters() {
   const showDupes         = el('show-dupes').checked;
   const onlyMisses        = el('show-only-misses').checked;
   const shadowQueue       = el('show-shadow-queue').checked;
+  const showInterestedOnly = el('show-interested-only').checked;
   const priceMin          = parseFloat(el('price-min').value)  || null;
   const priceMax          = parseFloat(el('price-max').value)  || null;
   const roomsMin          = parseFloat(el('rooms-min').value)  || null;
   const roomsMax          = parseFloat(el('rooms-max').value)  || null;
-  const roommatesFilter    = checkedValues('roommates-filter'); // [] = no filter (show all)
-  const brokerFilter       = checkedValues('broker-filter');    // [] = no filter (show all)
+  // Sidebar tri-state segmented controls: '' (Any) | 'yes' | 'no' | 'unknown'.
+  const roommatesFilter    = activeTristate('roommates');
+  const brokerFilter       = activeTristate('broker');
   const entryDateFrom      = el('entry-date-from').value || null;  // 'YYYY-MM-DD' or null
   const entryDateTo        = el('entry-date-to').value   || null;
   const entryDateUnknown   = el('entry-date-unknown').checked;
   const entryDateImmediate = el('entry-date-immediate').checked;
   return { labels, labelSources,
-           searchText, showDupes, onlyMisses, shadowQueue,
+           searchText, showDupes, onlyMisses, shadowQueue, showInterestedOnly,
            priceMin, priceMax, roomsMin, roomsMax,
            roommatesFilter, brokerFilter,
            entryDateFrom, entryDateTo, entryDateUnknown, entryDateImmediate };
@@ -108,6 +129,7 @@ function applyFilters() {
 
   filteredPosts = allPosts.filter(p => {
     if (!f.showDupes && p.is_duplicate) return false;
+    if (f.showInterestedOnly && p.status !== 'interested') return false;
     if (f.onlyMisses && !p.regex_miss) return false;
     // Shadow review queue: only posts where a head disagrees with the regex
     // AND no verdict exists yet. Agreement carries no information, and a
@@ -131,23 +153,23 @@ function applyFilters() {
     if (f.roomsMax !== null) {
       if (p.tags?.rooms == null || p.tags.rooms > f.roomsMax) return false;
     }
-    // Roommates — checkboxes; empty selection = no filter
-    if (f.roommatesFilter.length > 0) {
+    // Roommates — sidebar tri-state segmented control; '' (Any) = no filter
+    if (f.roommatesFilter) {
       const rm = p.tags?.roommates ?? null;
       const match =
-        (f.roommatesFilter.includes('yes')     && rm === true)  ||
-        (f.roommatesFilter.includes('no')      && rm === false) ||
-        (f.roommatesFilter.includes('unknown') && rm === null);
+        (f.roommatesFilter === 'yes'     && rm === true)  ||
+        (f.roommatesFilter === 'no'      && rm === false) ||
+        (f.roommatesFilter === 'unknown' && rm === null);
       if (!match) return false;
     }
 
     // Broker fee — same pattern
-    if (f.brokerFilter.length > 0) {
+    if (f.brokerFilter) {
       const br = p.tags?.broker ?? null;
       const match =
-        (f.brokerFilter.includes('yes')     && br === true)  ||
-        (f.brokerFilter.includes('no')      && br === false) ||
-        (f.brokerFilter.includes('unknown') && br === null);
+        (f.brokerFilter === 'yes'     && br === true)  ||
+        (f.brokerFilter === 'no'      && br === false) ||
+        (f.brokerFilter === 'unknown' && br === null);
       if (!match) return false;
     }
 
@@ -254,6 +276,8 @@ function appendCardChunk(grid, count = RENDER_CHUNK) {
   }
 }
 
+const STATUS_TITLES = { new: 'New', interested: 'Interested', seen: 'Seen', hidden: 'Hidden' };
+
 function cardHTML(post) {
   const thumb = post.image_urls?.[0]
     ? `<img class="card-thumb" src="${esc(post.image_urls[0])}" alt="" loading="lazy">`
@@ -316,10 +340,6 @@ function cardHTML(post) {
       ? `<span class="tag tag--not-rental-ai" title="ML model classified as not rental (confidence ${post.ml_prob ?? '?'}) — overrode or replaced the regex label">🤖 ML: Not rental</span>`
       : '<span class="tag tag--not-rental-ai" title="Auto-labeled (legacy)">Legacy: Not rental</span>';
 
-  // Highlight whichever label button matches the current human label.
-  const rentalActive    = post.human_label === 'rental'     ? ' active' : '';
-  const notRentalActive = post.human_label === 'not_rental' ? ' active' : '';
-
   const id = esc(post.post_id);
 
   // Detail pills from extracted tags + ✏ edit button.
@@ -349,36 +369,51 @@ function cardHTML(post) {
     tagsRow = `
 <div class="card-tags">
   ${pills.join('')}
-  <button class="btn-edit-tags" data-action="edit-tags" data-id="${id}" title="Add / correct tags — your fixes train the regex rules">✏</button>
 </div>${shadowHTML(post, id)}`;
   }
 
+  const openBtn = post.permalink
+    ? `<a class="btn-action btn-open" href="${esc(post.permalink)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`
+    : `<span class="btn-action btn-open" style="opacity:0.35;cursor:not-allowed" title="No direct link captured">Open ↗</span>`;
+
+  const interestedActive = post.status === 'interested' ? ' active' : '';
+  const statusTitle = STATUS_TITLES[post.status] || 'New';
+
+  // "⋯" overflow menu: everything that isn't Interested/Open. Reuses the
+  // exact same data-action values the old always-visible buttons carried,
+  // so handleCardClick needs no new branches for these.
+  const cardMenu = `
+<div class="card-menu-wrap">
+  <button class="btn-action btn-menu" data-action="toggle-card-menu" data-id="${id}" title="More actions">⋯</button>
+  <div class="card-menu">
+    <button data-action="label-rental" data-id="${id}">${post.human_label === 'rental' ? '✓ Unmark Rental' : 'Mark as Rental'}</button>
+    <button data-action="label-not-rental" data-id="${id}">${post.human_label === 'not_rental' ? '✓ Unmark Not rental' : 'Mark as Not rental'}</button>
+    <div class="card-menu-divider"></div>
+    ${isRental ? `<button data-action="edit-tags" data-id="${id}">✏ Edit tags <span class="menu-hint">(auto-flags miss)</span></button>` : ''}
+    <button data-action="toggle-dupe" data-id="${id}" title="Hidden from the default view unless 'Duplicates' is checked in the sidebar">${post.is_duplicate ? '✓ Unmark duplicate' : '⊘ Mark duplicate'}</button>
+    <div class="card-menu-divider"></div>
+    <button class="card-menu-item-danger" data-action="delete" data-id="${id}" title="Permanently remove this post. It will be re-scraped if it still appears on Facebook.">🗑 Delete</button>
+  </div>
+</div>`;
+
   return `
 <div class="card ${statusClass}" data-id="${id}">
-  <div class="card-img-wrap">${thumb}</div>
+  <div class="card-img-wrap">
+    ${thumb}
+    <span class="card-status-dot" title="${esc(statusTitle)}"></span>
+  </div>
   <div class="card-body">
     <div class="card-meta">
       <span class="card-group" title="${esc(post.group_name || post.group_id || '')}">${esc(post.group_name || post.group_id || '?')}</span>
       ${timeBlock}
-      ${dupeTag}${labelTag}${missTag}
     </div>
+    <div class="card-badges">${labelTag}${dupeTag}${missTag}</div>
     ${textBlock}
     ${tagsRow}
     <div class="card-actions-row">
-      <button class="btn-action btn-rental${rentalActive}"         data-action="label-rental"     data-id="${id}">Rental</button>
-      <button class="btn-action btn-not-rental${notRentalActive}"  data-action="label-not-rental" data-id="${id}">Not rental</button>
-    </div>
-    <div class="card-actions-row">
-      <button class="btn-action btn-interested" data-action="interested" data-id="${id}">Interested</button>
-      <button class="btn-action btn-seen"       data-action="seen"       data-id="${id}">Seen</button>
-      <button class="btn-action btn-hide"       data-action="hidden"     data-id="${id}">Hide</button>
-      ${post.permalink
-          ? `<a class="btn-action btn-open" href="${esc(post.permalink)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`
-          : `<span class="btn-action btn-open" style="opacity:0.35;cursor:not-allowed" title="No direct link captured">Open ↗</span>`}
-    </div>
-    <div class="card-actions-row">
-      <button class="btn-action btn-dupe${post.is_duplicate ? ' active' : ''}" data-action="toggle-dupe" data-id="${id}" title="Mark as duplicate — hidden from the default view unless 'Duplicates' is checked in the sidebar">⊘ Dupe</button>
-      <button class="btn-action btn-delete" data-action="delete" data-id="${id}" title="Permanently remove this post. It will be re-scraped if it still appears on Facebook.">🗑 Delete</button>
+      <button class="btn-action btn-interested${interestedActive}" data-action="interested" data-id="${id}" title="Click again to un-mark">Interested</button>
+      ${openBtn}
+      ${cardMenu}
     </div>
   </div>
 </div>`;
@@ -561,7 +596,7 @@ async function runShadowBackfill() {
 
 function updateResultCount() {
   const unexportedMiss = allPosts.filter(p => p.regex_miss && !p.regex_miss.exported_at).length;
-  el('result-count').textContent = `Showing ${filteredPosts.length} of ${allPosts.length}`;
+  el('result-count').textContent = `${filteredPosts.length.toLocaleString()} of ${allPosts.length.toLocaleString()}`;
   const exportMissBtn = el('export-misses-btn');
   if (exportMissBtn) {
     exportMissBtn.textContent = unexportedMiss > 0
@@ -692,10 +727,37 @@ function bindControls() {
   // Sidebar inputs that should re-filter on change.
   document.querySelectorAll(
     'input[name="label"], input[name="label-source"], ' +
-    'input[name="roommates-filter"], input[name="broker-filter"], ' +
-    '#show-dupes, #show-only-misses, #show-shadow-queue, ' +
+    '#show-dupes, #show-only-misses, #show-shadow-queue, #show-interested-only, ' +
     '#entry-date-unknown, #entry-date-immediate'
   ).forEach(input => input.addEventListener('change', applyFilters));
+
+  // Roommates / Broker fee tri-state segmented controls (Any / Yes / No / Unknown).
+  document.querySelectorAll('.tristate').forEach(group => {
+    group.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tristate-btn');
+      if (!btn || !group.contains(btn)) return;
+      group.querySelectorAll('.tristate-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyFilters();
+    });
+  });
+
+  // Header "Pipeline ▾" dropdown.
+  el('pipeline-menu-btn').addEventListener('click', () => {
+    pipelineMenuOpen = !pipelineMenuOpen;
+    el('pipeline-menu').classList.toggle('open', pipelineMenuOpen);
+  });
+  // Auto-close the dropdown after any of its own buttons is clicked (runs
+  // after that button's own listener, since bubbling reaches the ancestor
+  // #pipeline-menu second).
+  el('pipeline-menu').addEventListener('click', (e) => {
+    if (e.target.closest('button')) closePipelineMenu();
+  });
+  // Click-away closes whichever of the two dropdowns is open.
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.pipeline-wrap'))   closePipelineMenu();
+    if (!e.target.closest('.card-menu-wrap'))  closeCardMenu();
+  });
 
   // Number inputs should also re-filter on every keystroke (consistent with
   // price/rooms range below) so users see results update as they type.
@@ -756,6 +818,19 @@ async function handleCardClick(e) {
     btn.textContent = expanding ? 'Show less ▲' : 'Show more ▼';
     return;
   }
+
+  // Card "⋯" overflow menu — pure DOM toggle, manages its own open/closed
+  // class so it doesn't need a full applyFilters() re-render (which would
+  // disturb scroll position / the render-chunk depth).
+  if (action === 'toggle-card-menu') {
+    const wrap = btn.closest('.card-menu-wrap');
+    if (!wrap) return;
+    const willOpen = !wrap.classList.contains('open');
+    document.querySelectorAll('.card-menu-wrap.open').forEach(w => w.classList.remove('open'));
+    if (willOpen) wrap.classList.add('open');
+    return;
+  }
+  closeCardMenu(); // any other card action closes an open ⋯ menu
 
   const post = allPosts.find(p => p.post_id === postId);
   if (!post) return;
@@ -930,10 +1005,18 @@ async function handleCardClick(e) {
     return;
   }
 
-  // Status buttons (interested / seen / hidden) keep their existing behaviour.
-  await updatePostStatus(postId, action);
-  post.status = action;
-  applyFilters();
+  // "Interested" is the one direct-access status action (Seen/Hide live in
+  // the ⋯ menu) and behaves as a toggle: click again to un-mark, reverting
+  // to 'new' rather than getting stuck on 'interested'.
+  // "Interested" is the only status action left on the card (Seen/Hide were
+  // removed from the ⋯ menu). Toggles: click again to un-mark, reverting to
+  // 'new' rather than getting stuck on 'interested'.
+  if (action === 'interested') {
+    const newStatus = post.status === 'interested' ? 'new' : 'interested';
+    await updatePostStatus(postId, newStatus);
+    post.status = newStatus;
+    applyFilters();
+  }
 }
 
 // Replace the .card-tags pill row with an inline correction form.
@@ -1139,8 +1222,7 @@ function resetFilters() {
     cb.checked = cb.value === 'rental' || cb.value === 'unlabeled';
   });
   document.querySelectorAll('input[name="label-source"]').forEach(cb => cb.checked = true);
-  document.querySelectorAll('input[name="roommates-filter"]').forEach(cb => cb.checked = false);
-  document.querySelectorAll('input[name="broker-filter"]').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.tristate-btn').forEach(b => b.classList.toggle('active', b.dataset.value === ''));
   el('entry-date-from').value          = '';
   el('entry-date-to').value            = '';
   el('entry-date-unknown').checked     = true;
@@ -1153,6 +1235,7 @@ function resetFilters() {
   el('show-dupes').checked = false;
   el('show-only-misses').checked = false;
   el('show-shadow-queue').checked = false;
+  el('show-interested-only').checked = false;
   applyFilters();
 }
 
