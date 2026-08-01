@@ -1,18 +1,42 @@
 // background.js — Service worker
 //
+// The single write path into IndexedDB, and the only place a post is
+// classified. Everything below runs locally; the sole network egress is
+// Telegram (opt-in, user's own bot) — see lib/notify.js and lib/bot.js.
+//
 // Responsibilities:
-//   1. Open the dashboard tab when the popup requests it.
-//   2. Receive scraped posts from the content script, run deduplication,
-//      and save to IndexedDB.
-//   3. Auto-classify each newly saved post with the local regex extractor
-//      (lib/regex_extractor.js). Posts the regex can't classify stay
-//      unlabeled until a human (or stage-2 mechanism) labels them.
+//   1. Open the dashboard tab when the popup requests it (OPEN_DASHBOARD).
+//   2. Receive scraped posts (SAVE_POST) and run the full save pipeline —
+//      four-layer dedup (post_id / dedup_hash / prefix_key / suffix_key,
+//      lib/dedup.js) → regex classify → ML hybrid check → regex tag extract
+//      + ML broker fill → shadow-head prediction → save → notify check.
+//      See handleSavePost for the ordering constraints between these.
+//   3. Report the stored-post count to the popup (GET_TOTAL_COUNT).
+//   4. Re-score the shadow ML heads across every stored rental
+//      (SHADOW_BACKFILL) on request from the dashboard.
+//   5. Recover full Marketplace descriptions by opening listing pages in a
+//      background tab (ENRICH_COMMERCE_BACKFILL + the automatic queue), under
+//      a jittered rate limit with a 6h cooldown on a Facebook block.
+//
+// It also owns three pieces of startup state: ML weight loading (bundled vs.
+// retrained, hot-reloaded on change), the Telegram bot's polling alarm, and
+// one-time maintenance sweeps (legacy key cleanup, historic dedup repair).
+//
+// Classification is synchronous from the content script's perspective: by the
+// time SAVE_POST returns, the post is dedup'd, labeled, tagged and saved.
 //
 // Why handle DB + classification here instead of in the content script?
 // Content scripts run in the page's origin (facebook.com), so their
 // `indexedDB` would be facebook.com's storage — not the extension's. The
 // service worker always runs at the extension origin, so its IndexedDB is
 // shared with the dashboard.
+//
+// Two invariants worth knowing before editing:
+//   • Shadow heads (price, roommates) write to post.ml_shadow and NEVER to
+//     post.tags — matchesPreferences reads tags only, so a wrong shadow
+//     prediction structurally cannot reach a notification. See lib/ml_shadow.js.
+//   • notified_at / notify_failed_at must survive a post_id overwrite, or a
+//     re-scrape would re-alert on posts already sent.
 
 import { savePost, findByDedupHash, findByPrefixKey, findAllBySuffixKey, countPosts, getPost, getAllPosts } from './lib/db.js';
 import { computeDedupHash, computePrefixKey, computeSuffixKey, textSimilarity } from './lib/dedup.js';
@@ -51,7 +75,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 loadStoredPriceWeights().then(src => console.log(`[TLV Rentals] price weights: ${src}`));
 loadStoredRoommatesWeights().then(src => console.log(`[TLV Rentals] roommates weights: ${src}`));
 
-// ── Telegram bot command polling (stage 7d) ──────────────────────────────────
+// ── Telegram bot command polling ─────────────────────────────────────────────
 // A 30-second alarm wakes the worker to check for bot commands; pollBot()
 // switches to long-poll bursts while a conversation is active. Registered at
 // top level so every worker start re-registers it (chrome.alarms.create with

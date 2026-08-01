@@ -52,11 +52,11 @@ This tool is for personal use. Scraping Facebook may be against their Terms of S
 - **In-group permalink preference** — on a specific group page, the extractor rejects cross-card pollution (Recommended Reels, links to other groups) and only accepts permalinks that match the current group or are Marketplace listings.
 - **Canonical Open links** — every post's Open button resolves to the correct canonical Facebook URL across all URL patterns: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `?set=gm.POST_ID` (home-feed group posts), `/commerce/listing/`, and `/marketplace/item/`.
 - **Works on the home feed too** — group posts surfaced in the personal home feed are captured with proper post IDs and group context, not just the aggregated `/groups/feed/` view.
-- **Filterable dashboard** — sort by scraped/posted date, price, or rooms; filter by status, label, label source, days posted, days scraped, free-text search, price range, rooms range, roommates, broker fee, entry-date range, duplicates visibility.
-- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB.
-- **Two-layer deduplication** — exact duplicates are caught by SHA-256 of normalised text + first image URL. Near-duplicates (same listing reposted with minor edits — different phone number, added emoji, small price change) are caught by a prefix-key match on the first 10 normalised words. A duplicate inherits the original's classification so we don't redo work on the same content.
+- **Filterable dashboard** — newest-first card grid with collapsible filter sections: label, label source (human / AI), free-text search, price range, rooms range, roommates, broker fee, entry-date range, and toggles for Interested, Duplicates, regex-misses-only, and the ML review queue. Maintenance actions are grouped under a single **Pipeline ▾** menu, and each card carries a **⋯** menu for labelling, tag editing, duplicate marking, and delete. Cards render in chunks as you scroll, so a database of thousands stays responsive.
+- **Human-in-the-loop corrections** — correct any label or tag via the inline editor. Corrections are stored as `tags_human_override` in IndexedDB and double as ML training signal.
+- **Four-layer deduplication** — `post_id` (the primary key) collapses re-scrapes and cross-group Marketplace posts of the same listing. Exact duplicates are caught by SHA-256 of normalised text + first image URL. Near-duplicates are caught two ways: a **prefix key** (first 10 normalised words) for reposts edited later in the text, and a **suffix key** (last 10 normalised words) for reposts that rewrite the headline but keep their closing lines — with a whole-text similarity gate so broker-template posts describing *different* apartments aren't collapsed. A duplicate inherits the original's classification so we don't redo work on the same content.
 - **Mark as duplicate** — manually flag cross-posted listings the hash doesn't catch. They drop out of the default view; toggle *Duplicates* in the sidebar to see them again.
-- **Permanent delete** — a trash button on each card removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
+- **Permanent delete** — 🗑 Delete in a card's ⋯ menu removes the post from IndexedDB immediately. It will be re-captured on the next fresh scrape if Facebook still shows it — there is no permanent blocklist.
 - **Delete All** — wipes the entire database so the next scrape starts from a clean slate. Requires explicit confirmation in the dashboard (shows the current post count before you confirm).
 - **Telegram notifications (v2.0.0)** — get an alert on your phone when a scrape captures a **new** post matching your preferences: max price, rooms range, whole-apartment vs. roommates, broker fee, and include/exclude keyword lists (the only location filter — e.g. neighborhood names in Hebrew or English). Matching is recall-biased: a post whose price or rooms could not be extracted is never excluded by that rule. One message per matching post, with price/rooms/size, group name, a text snippet, and the permalink. Duplicates and re-scrapes never re-notify; a failed send retries on the next scrape.
 - **Control the bot from your phone (v2.0.0)** — the bot itself is a control surface: `/start` runs a 6-question setup wizard in the chat, `/reset` clears preferences and starts over, `/status` shows current settings, `/on` `/off` toggle alerts, `/retrain` retrains the ML model on your accumulated corrections (v2.3.0). The first chat to `/start` an unbound bot becomes its owner; every other chat is ignored permanently. No server involved — the extension's service worker polls Telegram, so commands apply while Chrome is running (queued up to 24h otherwise). Every alert carries a 🚩 Miss button for correcting the classification or any tag straight from the chat (v2.2.0).
@@ -113,14 +113,24 @@ The extension is not published to the Chrome Web Store. Load it unpacked:
 
 Click **Open Dashboard ↗** in the popup (or navigate to `chrome-extension://[id]/dashboard/dashboard.html`).
 
-- **Regex Extract** — runs the local regex extractor on every rental post that hasn't been processed yet. Instant.
-- **Rental / Not rental** buttons — override the auto-label. Marking a post as rental triggers regex tag extraction inline.
-- **✏ Edit tags** — correct any extracted field, or change the classification. Corrections are stored as `tags_human_override` in IndexedDB.
-- **Show more / Show less** — long card text is line-clamped to 3 lines; click to expand. Expanded state persists across re-renders.
-- **⊘ Dupe** — toggle a post's duplicate flag manually.
+**Header.** Free-text search, a live "shown of total" count, and:
+
+- **Pipeline ▾** — the maintenance menu: *Regex Extract* (run the extractor over unprocessed rental posts, instant), *Re-test Regex + ML* (preview what the current rules would change, then apply), *🧠 Retrain ML* (badge shows corrections accumulated since the last retrain), *🔬 Shadow Backfill*, *Export Misses* (badge shows unexported flags), and *💾 Export Weights*.
+- **🔬 Devtools** — pipeline stats, the reasoning playground, shadow-ML progress and live model weights.
+- **🔔 Notifications** — the Telegram settings panel.
+- **Export** — download the chosen subset (all / current view / rentals / not rentals / unlabeled / duplicates / misses) as JSON.
+- **🗑 Delete All** — wipes every post from IndexedDB. Requires confirmation and shows the current count. Use before a re-scrape when you want a clean slate.
+
+**Sidebar filters** (collapsible sections): label, label source (human / AI), price range, rooms range, roommates, broker fee, entry-date range, and toggles for Interested, Duplicates, regex-misses-only, and the 🔬 ML review queue.
+
+**Cards.** A status dot marks new / interested / seen / hidden; badges show the label (with provenance — human, regex, or 🤖 ML with confidence), plus Dupe and ⚑ Miss flags. Long text is clamped to 3 lines with **Show more / Show less**, and the expanded state survives re-renders. Each card has **Interested**, **Open ↗**, and a **⋯** menu:
+
+- **Mark as Rental / Not rental** — override the auto-label (click again to unmark). Marking a post as rental triggers regex tag extraction inline.
+- **✏ Edit tags** — correct any extracted field or the classification. Corrections are stored as `tags_human_override` and become ML training signal.
+- **⊘ Mark duplicate** — flag a cross-post the hash didn't catch; the dashboard pairs it with its most similar original.
 - **🗑 Delete** — removes the post from IndexedDB. It will be re-captured on the next fresh scrape if Facebook still shows it.
-- **🗑 Delete All** — wipes every post from IndexedDB. Requires confirmation (shows the current count). Use this before a re-scrape when you want a clean slate.
-- **Export JSON** — download every IndexedDB record as a JSON file.
+
+Where a shadow ML head disagrees with the regex, the card also shows a 🔬 row asking you to judge which is right — those verdicts are the benchmark that decides whether the head ever graduates to tagging.
 
 ### Telegram notifications
 
@@ -147,7 +157,7 @@ To run this on a schedule (e.g. every hour, so Telegram alerts arrive while you'
 ```
 .
 ├── manifest.json                       # MV3 manifest
-├── background.js                       # Service worker — message router, dedup, regex classify
+├── background.js                       # Service worker — message router, dedup, classify, notify, enrich
 ├── content/
 │   ├── content.js                      # Orchestrator + popup-message handler + auto-scrape detector
 │   ├── extractor.js                    # DOM → post object
@@ -158,19 +168,23 @@ To run this on a schedule (e.g. every hour, so Telegram alerts arrive while you'
 │   └── popup.css
 ├── dashboard/
 │   ├── dashboard.html
-│   ├── dashboard.js                    # Filters, rendering, Regex Extract, tag editor, delete
+│   ├── dashboard.js                    # Filters, rendering, tag editor, shadow review, pipeline actions
 │   └── dashboard.css
 ├── lib/
 │   ├── db.js                           # IndexedDB wrapper
-│   ├── dedup.js                        # SHA-256 exact hash + first-10-word prefix key
+│   ├── dedup.js                        # SHA-256 exact hash + prefix/suffix keys + similarity
 │   ├── regex_extractor.js              # Local-only classifier + tag extractor
 │   ├── notify.js                       # Telegram notify — settings, matching, send, format
 │   ├── bot.js                          # Telegram bot — polling, commands, /start wizard
+│   ├── ml_features.js                  # Shared tokenizer/scorer — one source of truth for train + runtime
+│   ├── ml_classifier.js                # ML runtime — hybrid label, broker fill, weight loading
+│   ├── ml_train_core.js                # Pure training machinery (TF-IDF + logistic regression, CV)
 │   ├── ml_shadow.js                    # Shadow-mode records, verdicts, review queue, leak guard
 │   ├── ml_price.js                     # Price candidate ranker + period/short-stay logic
 │   ├── ml_roommates.js                 # Shadow roommates head (keyword-masked)
 │   ├── ml_retrain.js                   # In-extension retraining (all four heads)
 │   ├── ml_weights_export.js            # Promoted weights → bundled lib/*_weights.js
+│   └── ml_*_weights.js                 # GENERATED bundled weights — never edit by hand
 ├── devtools/
 │   ├── devtools.html / devtools.js     # In-extension devtools page (no Node)
 │   ├── devtools_core.js                # Pure stats/reasoning shared with the Node shell
@@ -194,16 +208,11 @@ To run this on a schedule (e.g. every hour, so Telegram alerts arrive while you'
 
 ---
 
-## Roadmap
-
-1. **Dashboard "regex missed" mechanism.** *(In progress.)* Mark a post as a regex miss, record the key phrase that proves the correct answer, export as a training prompt, apply regex fixes, re-test, clear resolved flags.
-2. ~~**Fix the Open button.**~~ ✅ Done (v1.1.5) — canonical URLs now work for all Facebook URL patterns across group pages, the aggregated groups feed, and the personal home feed: `/posts/`, `?multi_permalinks=`, `?set=pcb.POST_ID`, `?set=gm.POST_ID`, `/commerce/listing/`, `/marketplace/item/`. Includes guard against reused-image pcb/gm IDs shadowing the real post ID.
-3. ~~**Missing-posts capture overhaul.**~~ ✅ Done (v1.2.0) — detection rewritten to `role="feed"` child units with body-anchor and commerce-link fallbacks; fixed neighbour-ID theft (a permalink-less post stealing an adjacent post's ID and overwriting it); pure Marketplace listing cards now captured; anonymous posts hashed on full text to prevent overwrites.
-4. ~~**Improve duplicate detection.**~~ ✅ Done (v1.4.0) — two-layer dedup: exact SHA-256 match plus prefix-key matching on the first 10 normalised words. Catches cross-posted listings edited before reposting (different phone, emoji, price tweak).
-5. **Fix the group-name capture bug.** Some group names come through truncated.
-6. ~~**Telegram notifications + phone-side bot control.**~~ ✅ Done (v2.0.0) — opt-in push alerts through a user-owned Telegram bot when a newly captured post matches saved preferences (nulls-pass matching, per-post messages, no re-notification on re-scrapes/duplicates, failed sends retried next scrape); preferences configurable from the dashboard 🔔 panel or from the Telegram chat itself (`/start` wizard, `/reset`, `/status`, `/on` `/off`), with auto-bind of the first chat and silent dropping of strangers.
-
-### Known limitations
+## Known limitations
 
 - **Open button on click-only posts** — anonymous, background-colour, and zero/collapsed-comment posts expose no permalink in the DOM (Facebook builds the URL only on click). They are captured with full text, but the Open button is disabled. A click-based permalink resolver is a possible future enhancement.
+- **Truncated group names** — some group names come through cut short from the DOM.
+- **Entry-date extraction gaps** — entry dates are regex-only (no ML head). Around 100 posts use phrasings the rules don't yet cover; these show no entry date rather than a wrong one.
+- **Shadow heads don't tag yet** — the price and roommates models predict but never write tags (by design). They graduate only once their measured precision clears the bar; until then, price/roommates tags come from the regex alone.
+- **Roommates masking leak** — the shadow roommates head masks its keywords imperfectly, leaving Hebrew suffix debris, so its masked cross-validation score overstates real precision. Documented in CLAUDE.md.
 

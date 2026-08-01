@@ -26,12 +26,13 @@ This applies to every stage of the project — bug fixes, refactors, new feature
 These stages are sequential.
 
 1. **Drop Gemini entirely — regex-only pipeline** (complete as of 2026-05-26). `lib/gemini.js` deleted; `host_permissions` no longer mentions `generativelanguage.googleapis.com`; popup has no settings panel; dashboard has no "Classify & Tag" button. Classification is now `lib/regex_extractor.js` only, called inline from `background.js` on every `SAVE_POST`. Existing Gemini-extracted tags in IDB were left in place — no migration.
-2. **Dashboard "regex missed" mechanism.** Add UI to mark a post as a regex miss and record *why* the correct answer is correct. The "why" is the training signal — the user batches these and pastes them to Claude, who updates `lib/regex_extractor.js` rules accordingly.
+2. ~~**Dashboard "regex missed" mechanism.**~~ (Complete.) UI to mark a post as a regex miss and record *why* the correct answer is correct — the "why" is the training signal. Built as: the ✏ tag editor auto-detecting changed fields into `regex_miss.missed_fields`, per-field `key_phrases`, the ⚑ Miss badge, **Export Misses** (formats a ready-to-paste Claude prompt and stamps `exported_at`), and **Re-test Regex + ML** (which clears flags whose fields the updated rules now get right).
 3. **Fix the Open button.** (Complete as of 2026-05-28.) Canonical permalink construction now works across all Facebook URL patterns: `/posts/`, `/permalink/`, `?multi_permalinks=`, `?set=pcb.POST_ID` (photo-album posts on the aggregated feed), `/commerce/listing/`, and `/marketplace/item/`. The extractor walks up to 8 DOM levels to locate the group ID when the card container is too narrow to contain the author link.
 4. **Missing-posts capture overhaul** (complete as of 2026-05-30, v1.2.0). See the dedicated section below. Detection rewritten to `role="feed"` child units; neighbour-ID theft fixed; pure Marketplace cards captured; anonymous-post hashing hardened.
 5. ~~**Improve duplicate detection.**~~ (Complete as of 2026-07-12, v1.4.0.) Two-layer dedup: exact SHA-256 match (unchanged) plus a `prefix_key` index on the first 10 normalised words (`lib/dedup.js::computePrefixKey`). `findByPrefixKey` in `lib/db.js` does an O(1) IDB index lookup after the exact-hash check fails. Catches cross-posted listings edited before reposting (different phone, emoji, small price change). DB schema bumped to v2 to add the `prefix_key` index; `onupgradeneeded` handles the v1→v2 migration automatically.
 6. **Fix the group-name capture bug.** Some group names come through truncated.
 7. ~~**Telegram notifications + phone-side bot control.**~~ (Complete as of 2026-07-13, v2.0.0.) See the dedicated section below. Push alerts to the user's phone when a newly scraped post matches saved preferences; preferences editable from the dashboard 🔔 modal or from the Telegram chat itself (`/start` setup wizard).
+8. ~~**Dashboard visual redesign.**~~ (Complete as of 2026-07-30.) Ported from the "TLV Rentals Dashboard Redesign" Claude Design project. `dashboard.css` is now an oklch design-token system (`:root` custom properties) covering every surface including the modals, tag editor and shadow row; the header groups the six maintenance actions under a **Pipeline ▾** dropdown; sidebar filters are collapsible `<details>` sections (Roommates/Broker fee became 4-way segmented controls — Any/Yes/No/Unknown — replacing the checkbox triples); and each card has a **⋯** overflow menu holding label/edit-tags/dupe/delete, leaving Interested + Open ↗ as the direct actions. **No business logic changed** — filter predicates, the tag editor, shadow verdicts, and the retrain/retest/export flows are untouched, and every pre-existing element id was preserved so `el()` lookups still resolve.
 
 ## Post detection (v1.2.0 overhaul)
 
@@ -78,7 +79,7 @@ Facebook feed → content scripts → service worker → IndexedDB → dashboard
 | **content/scroller.js** | Auto-scrolls feed, clicks "See more" buttons. |
 | **content/content.js** | Main content script — orchestrates scraper state machine. |
 | **popup/popup.js** | Popup UI — scrape controls, live status polling. |
-| **dashboard/dashboard.js** | Dashboard — loads posts, filters in-memory, tag editor, Regex Extract backfill. |
+| **dashboard/dashboard.js** | Dashboard — loads posts, filters in-memory, chunked card rendering, tag editor, shadow-ML review, Pipeline menu actions (extract/re-test/retrain/backfill/exports). |
 | **lib/db.js** | IndexedDB wrapper — including `clearAllPosts()` for bulk deletion. |
 | **lib/regex_extractor.js** | Local Hebrew/English regex classifier + tag extractor. No network. |
 | **lib/dedup.js** | Post fingerprinting — SHA-256. |
